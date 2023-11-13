@@ -1,0 +1,17 @@
+[package]
+name = "swayidle-rs"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clap = { version = "4.4.8", features = ["derive"] }
+futures = { version = "0.3.29", features = ["compat"] }
+futures-channel = "0.3.29"
+futures-util = { version = "0.3.29", features = ["futures-channel"] }
+mlua = { version = "0.9.1", features = ["async", "luajit"] }
+tokio = { version = "1.32.0", features = ["rt", "macros", "process", "rt-multi-thread"] }
+wayrs-client = { version = "0.12.2", features = ["tokio"] }
+wayrs-protocols = { version = "0.12.1", features = ["ext-idle-notify-v1"] }
+zbus = { version = "3.14.1", features = ["tokio"] }
