@@ -196,7 +196,7 @@ fn lua_init(state: &mut State) -> mlua::Result<()> {
     };
 
     let globals = state.lua.globals();
-    globals.set("idle_notifier", my_lua_functions)?;
+    globals.set("IdleNotifier", my_lua_functions)?;
 
     let config_path = args.config;
     let config_script = fs::read_to_string(config_path)?;
@@ -280,10 +280,14 @@ impl Dispatch<ext_idle_notification_v1::ExtIdleNotificationV1, NotificationConte
         _qh: &QueueHandle<Self>,
     ) {
         println!("Idle Notification: {:?} {:?}", event, ctx.uuid);
-        let mut map = state.notification_list.lock().unwrap();
+        let map = state.notification_list.lock().unwrap();
         let globals = state.lua.globals();
-        let tostring: Function = globals.get("NotifyToast").unwrap();
-        tostring.call::<_, ()>(());
-        // state.lua.call::<_, ()>(map.get(&ctx.uuid).unwrap().0, ())?;
+        let fn_name = map.get(&ctx.uuid).unwrap().0.clone();
+        let tostring: Function = globals.get(fn_name).unwrap();
+        let _ = tostring.call::<_, ()>(match event {
+            ext_idle_notification_v1::Event::Idled => "idled",
+            ext_idle_notification_v1::Event::Resumed => "resumed",
+            _ => "unknown",
+        });
     }
 }
