@@ -6,10 +6,10 @@ use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::println;
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use sysinfo::{ProcessExt, System, SystemExt};
-use tokio::process::Command;
+// use tokio::process::Command;
 use uuid::Uuid;
 use wayland_client::protocol::{wl_registry, wl_seat};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
@@ -21,31 +21,33 @@ use xdg::BaseDirectories;
 const APP_NAME: &str = "swayidle-rs";
 const CONFIG_FILE: &str = include_str!("../lua_configs/idle_config.lua");
 
-async fn run_once(command: &str) -> anyhow::Result<()> {
+fn run_once(command: &str) {
     let mut s = System::new_all();
     // Check if 'swaylock' is already running
 
-    s.refresh_processes();
     let is_running = s
         .processes_by_exact_name("swaylock")
         .any(|p| p.name() == "swaylock");
     // let is_running = s.processes().values().any(|p| p.name() == "swaylock");
 
     if !is_running {
-        let command = Command::new("swaylock")
+        println!("swaylock is ");
+        let mut command = Command::new("swaylock");
+        command
             .args(["-f"])
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("Failed to spawn child process");
-
-        match command.wait().await {
-            Ok(status) => println!("Child process exited with: {:?}", status),
-            Err(e) => eprintln!("Failed to wait on child process: {}", e),
+            .stderr(Stdio::null());
+        unsafe {
+            command.pre_exec(|| {
+                // Ignore SIGINT and SIGTERM signals
+                // libc::signal(libc::SIGINT, libc::SIG_IGN);
+                // libc::signal(libc::SIGTERM, libc::SIG_IGN);
+                Ok(())
+            });
         }
+        command.spawn().expect("failed to execute process");
     } else {
         println!("swaylock is already running");
-        Ok(())
     }
 }
 
@@ -284,11 +286,7 @@ impl Dispatch<ext_idle_notification_v1::ExtIdleNotificationV1, NotificationConte
             ext_idle_notification_v1::Event::Resumed => "resumed",
             _ => "unknown",
         });
-        let child = run_once("swaylock");
-        match child.wait().await {
-            Ok(status) => println!("Child process exited with: {:?}", status),
-            Err(e) => eprintln!("Failed to wait on child process: {}", e),
-        }
+        run_once("swaylock");
     }
 }
 
