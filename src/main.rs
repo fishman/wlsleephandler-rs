@@ -1,15 +1,10 @@
 use clap::Parser;
-use mlua::{Lua, UserData, UserDataMethods, Function};
-use tokio::sync::mpsc;
-use std::{fs, print};
-use std::sync::{Arc, Mutex};
-use wayland_client::{Connection, Dispatch, QueueHandle, EventQueue};
+use mlua::{Function, Lua, UserData, UserDataMethods};
 use wayland_client::protocol::{wl_registry, wl_seat};
-use  wayland_protocols::ext::idle_notify::v1::client::{ext_idle_notifier_v1, ext_idle_notification_v1};
-use tokio::task;
-use std::task::{Poll, Context};
-use std::pin::Pin;
-use std::convert::Infallible;
+use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
+use wayland_protocols::ext::idle_notify::v1::client::{
+    ext_idle_notification_v1, ext_idle_notifier_v1,
+};
 
 // fn my_async_function(event_handler: &mut EventQueue<State>, qhandle: QueueHandle<State>, state: State) {
 //     let mut context = Context::from_waker(futures::task::noop_waker_ref());
@@ -45,6 +40,18 @@ struct Args {
     config: String,
 }
 
+#[derive(Debug)]
+struct State {
+    wl_seat: Option<wl_seat::WlSeat>,
+    idle_notifier: Option<ext_idle_notifier_v1::ExtIdleNotifierV1>,
+    lua: Lua,
+}
+
+#[derive(Debug)]
+struct NotificationContext {
+    id: u32,
+}
+
 #[tokio::main]
 async fn main() -> mlua::Result<()> {
     let conn = Connection::connect_to_env().unwrap();
@@ -57,7 +64,12 @@ async fn main() -> mlua::Result<()> {
     let mut state = State {
         wl_seat: None,
         idle_notifier: None,
+        lua: Lua::new(),
     };
+
+    {
+        state.lua.sandbox(true)?;
+    }
 
     // Run the event loop in a separate async task
     // task::spawn(async move {
@@ -66,42 +78,58 @@ async fn main() -> mlua::Result<()> {
     //         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     //     }
     // });
+    // task::spawn(async move {
+    //     loop {
+    //         let _ = event_queue.dispatch
+    //     }
+    // });
 
-    println!("Starting the example window app, press <ESC> to quit.");
-
-    // while true {
-    //     event_queue.blocking_dispatch(&mut state).unwrap();
-    // }
+    loop {
+        event_queue.blocking_dispatch(&mut state).unwrap();
+        // tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
     // Your application logic goes here
     // ...
-
-    Ok(())
-}
-
-struct State {
-    wl_seat: Option<wl_seat::WlSeat>,
-    idle_notifier: Option<ext_idle_notifier_v1::ExtIdleNotifierV1>,
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for State {
     fn event(
-        _: &mut Self,
+        state: &mut Self,
         registry: &wl_registry::WlRegistry,
         event: wl_registry::Event,
         _: &(),
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        if let wl_registry::Event::Global { name, interface, .. } = event {
-            println!("Global: {:?}", interface);
+        if let wl_registry::Event::Global {
+            name, interface, ..
+        } = event
+        {
             match &interface[..] {
                 "wl_seat" => {
-                    registry.bind::<wl_seat::WlSeat, _, _>(name, 1, qh, ());
+                    let wl_seat = registry.bind::<wl_seat::WlSeat, _, _>(name, 1, qh, ());
+                    state.wl_seat = Some(wl_seat);
                     println!("Seat: {:?}", name);
+                    // let mut notification = Notification {
+                    //     id: 0,
+                    // };
+                    for i in 1..10 {
+                        let userdatarequest = NotificationContext { id: i };
+                        let _notification =
+                            state.idle_notifier.as_ref().unwrap().get_idle_notification(
+                                i * 1000,
+                                state.wl_seat.as_ref().unwrap(),
+                                &qh,
+                                userdatarequest,
+                            );
+                    }
                 }
                 "ext_idle_notifier_v1" => {
-                    println!("idle: {:?}", name);
-                    registry.bind::<ext_idle_notifier_v1::ExtIdleNotifierV1, _, _>(name, 1, qh, ());
+                    let idle_notifier = registry
+                        .bind::<ext_idle_notifier_v1::ExtIdleNotifierV1, _, _>(name, 1, qh, ());
+
+                    println!("Idle Notifier: {:?}", name);
+                    state.idle_notifier = Some(idle_notifier);
                 }
                 _ => {}
             }
@@ -111,29 +139,37 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
 
 impl Dispatch<wl_seat::WlSeat, ()> for State {
     fn event(
-        state: &mut Self,
-        seat: &wl_seat::WlSeat,
-        _event: wl_seat::Event,
+        _: &mut Self,
+        _: &wl_seat::WlSeat,
+        _: wl_seat::Event,
         _: &(),
         _: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        state.wl_seat = Some(seat.clone());
-        println!("Seat:");
     }
 }
 
 impl Dispatch<ext_idle_notifier_v1::ExtIdleNotifierV1, ()> for State {
     fn event(
-        state: &mut Self,
-        idle_notifier: &ext_idle_notifier_v1::ExtIdleNotifierV1,
-        event: ext_idle_notifier_v1::Event,
+        _state: &mut Self,
+        _idle_notifier: &ext_idle_notifier_v1::ExtIdleNotifierV1,
+        _event: ext_idle_notifier_v1::Event,
         _: &(),
         _: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        println!("Idle Notifier: {:?}", event);
-        state.idle_notifier = Some(idle_notifier.clone());
     }
 }
 
+impl Dispatch<ext_idle_notification_v1::ExtIdleNotificationV1, NotificationContext> for State {
+    fn event(
+        _state: &mut Self,
+        _idle_notification: &ext_idle_notification_v1::ExtIdleNotificationV1,
+        event: ext_idle_notification_v1::Event,
+        udata: &NotificationContext,
+        _: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        println!("Idle Notification: {:?} {:?}", event, udata.id);
+    }
+}
