@@ -1,8 +1,8 @@
 use clap::Parser;
 use mlua::{Function, Lua, UserData, UserDataMethods};
 use std::collections::HashMap;
-use std::{fs, println};
 use std::sync::{Arc, Mutex};
+use std::{fs, println};
 use uuid::Uuid;
 use wayland_client::protocol::{wl_registry, wl_seat};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
@@ -43,17 +43,8 @@ struct MyLuaFunctions {
     notification_list: NotificationListHandle,
 }
 
-type NotificationListHandle = Arc<
-    Mutex<
-        HashMap<
-            Uuid,
-            (
-                String,
-                ext_idle_notification_v1::ExtIdleNotificationV1,
-            ),
-        >,
-    >,
->;
+type NotificationListHandle =
+    Arc<Mutex<HashMap<Uuid, (String, ext_idle_notification_v1::ExtIdleNotificationV1)>>>;
 
 impl UserData for MyLuaFunctions {
     fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
@@ -64,16 +55,12 @@ impl UserData for MyLuaFunctions {
                     uuid: generate_uuid(),
                 };
 
-                let notification = this
-                    .idle_notifier
-                    .as_ref()
-                    .unwrap()
-                    .get_idle_notification(
-                        (timeout * 1000).try_into().unwrap(),
-                        this.wl_seat.as_ref().unwrap(),
-                        &this.qh,
-                        ctx.clone(),
-                    );
+                let notification = this.idle_notifier.as_ref().unwrap().get_idle_notification(
+                    (timeout * 1000).try_into().unwrap(),
+                    this.wl_seat.as_ref().unwrap(),
+                    &this.qh,
+                    ctx.clone(),
+                );
 
                 let mut map = this.notification_list.lock().unwrap();
                 map.insert(ctx.uuid, (fn_name, notification));
@@ -97,13 +84,8 @@ async fn main() -> mlua::Result<()> {
     let display = conn.display();
     display.get_registry(&qhandle, ());
 
-    let map: HashMap<
-        Uuid,
-        (
-            String,
-            ext_idle_notification_v1::ExtIdleNotificationV1,
-        ),
-    > = HashMap::new();
+    let map: HashMap<Uuid, (String, ext_idle_notification_v1::ExtIdleNotificationV1)> =
+        HashMap::new();
     let shared_map = Arc::new(Mutex::new(map));
 
     let mut state = State {
@@ -151,7 +133,7 @@ fn lua_init(state: &mut State) -> mlua::Result<()> {
 
     let lua = &state.lua;
     lua.sandbox(true)?;
-    let my_lua_functions = MyLuaFunctions { 
+    let my_lua_functions = MyLuaFunctions {
         wl_seat: state.wl_seat.clone(),
         idle_notifier: state.idle_notifier.clone(),
         qh: state.qh.clone(),
