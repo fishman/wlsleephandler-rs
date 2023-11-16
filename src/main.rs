@@ -9,28 +9,6 @@ use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
 use wayland_protocols::ext::idle_notify::v1::client::{
     ext_idle_notification_v1, ext_idle_notifier_v1,
 };
-// fn my_async_function(event_handler: &mut EventQueue<State>, qhandle: QueueHandle<State>, state: State) {
-//
-//     let mut context = Context::from_waker(futures::task::noop_waker_ref());
-//
-//     loop {
-//         match Pin::new(&mut event_handler).poll_dispatch_pending(&mut context, &mut state) {
-//             // Poll::Ready(Infallible::from(Ok(())) => {
-//             //     // All pending events have been processed
-//             //     // return Ok::<(), Infallible>(());
-//             // },
-//             Poll::Ready(Err(e)) => {
-//                 // Handle errors here
-//             },
-//             Poll::Pending => {
-//                 // No events to process, can yield to other tasks
-//                 break;
-//             }
-//         }
-//     }
-// }
-
-// mod idle_notifier;
 
 #[derive(Debug)]
 pub enum Request {
@@ -56,7 +34,6 @@ struct State {
 #[derive(Clone, Debug)]
 struct NotificationContext {
     uuid: Uuid,
-    // idle_cb: Function,
 }
 
 struct MyLuaFunctions {
@@ -65,8 +42,6 @@ struct MyLuaFunctions {
     idle_notifier: Option<ext_idle_notifier_v1::ExtIdleNotifierV1>,
     notification_list: NotificationListHandle,
 }
-
-type StateHandle = Arc<Mutex<State>>;
 
 type NotificationListHandle = Arc<
     Mutex<
@@ -131,13 +106,6 @@ async fn main() -> mlua::Result<()> {
     > = HashMap::new();
     let shared_map = Arc::new(Mutex::new(map));
 
-    // let mut state = State {
-    //     wl_seat: None,
-    //     idle_notifier: None,
-    //     qh: qhandle,
-    //     // notification_list: shared_map,
-    //     lua: Lua::new(),
-    // };
     let mut state = State {
         wl_seat: None,
         idle_notifier: None,
@@ -145,8 +113,6 @@ async fn main() -> mlua::Result<()> {
         notification_list: shared_map.clone(),
         lua: Lua::new(),
     };
-    {
-    }
     // Run the event loop in a separate async task
     // task::spawn(async move {
     //     loop {
@@ -163,10 +129,7 @@ async fn main() -> mlua::Result<()> {
     loop {
         // let mut state = state.as_ref().lock().unwrap();
         event_queue.blocking_dispatch(&mut state).unwrap();
-        // tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    // Your application logic goes here
-    // ...
 }
 
 fn _create_notifications(state: &mut State, qh: &QueueHandle<State>) {
@@ -202,10 +165,6 @@ fn lua_init(state: &mut State) -> mlua::Result<()> {
     let config_script = fs::read_to_string(config_path)?;
 
     let _result = lua.load(&config_script).exec()?;
-    // match result {
-    //     Ok(_) => println!("Lua config loaded successfully"),
-    //     Err(e) => println!("Error loading Lua config: {}", e),
-    // }
 
     Ok(())
 }
@@ -230,8 +189,6 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                     println!("Seat: {:?}", name);
 
                     let _ = lua_init(state);
-
-                    // create_notifications(state, &qh);
                 }
                 "ext_idle_notifier_v1" => {
                     let idle_notifier = registry
