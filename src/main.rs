@@ -110,9 +110,6 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                     let wl_seat = registry.bind::<wl_seat::WlSeat, _, _>(name, 1, qh, ());
                     state.wl_seat = Some(wl_seat);
                     println!("Seat: {:?}", name);
-                    // let mut notification = Notification {
-                    //     id: 0,
-                    // };
                     for i in 1..10 {
                         let userdatarequest = NotificationContext { id: i };
                         let _notification =
