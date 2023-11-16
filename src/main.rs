@@ -3,9 +3,13 @@ use mlua::{Function, Lua, UserData, UserDataMethods};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::println;
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
+use sysinfo::{ProcessExt, System, SystemExt};
+use tokio::process::Command;
 use uuid::Uuid;
 use wayland_client::protocol::{wl_registry, wl_seat};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
@@ -16,6 +20,34 @@ use xdg::BaseDirectories;
 
 const APP_NAME: &str = "swayidle-rs";
 const CONFIG_FILE: &str = include_str!("../lua_configs/idle_config.lua");
+
+async fn run_once(command: &str) -> anyhow::Result<()> {
+    let mut s = System::new_all();
+    // Check if 'swaylock' is already running
+
+    s.refresh_processes();
+    let is_running = s
+        .processes_by_exact_name("swaylock")
+        .any(|p| p.name() == "swaylock");
+    // let is_running = s.processes().values().any(|p| p.name() == "swaylock");
+
+    if !is_running {
+        let command = Command::new("swaylock")
+            .args(["-f"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("Failed to spawn child process");
+
+        match command.wait().await {
+            Ok(status) => println!("Child process exited with: {:?}", status),
+            Err(e) => eprintln!("Failed to wait on child process: {}", e),
+        }
+    } else {
+        println!("swaylock is already running");
+        Ok(())
+    }
+}
 
 fn ensure_config_file_exists(filename: &str) -> std::io::Result<()> {
     let xdg_dirs = BaseDirectories::with_prefix(APP_NAME)?;
@@ -96,7 +128,7 @@ fn generate_uuid() -> uuid::Uuid {
 }
 
 #[tokio::main]
-async fn main() -> mlua::Result<()> {
+async fn main() -> anyhow::Result<()> {
     let conn = Connection::connect_to_env().unwrap();
     let mut event_queue: EventQueue<State> = conn.new_event_queue();
     let qhandle = event_queue.handle();
@@ -129,9 +161,10 @@ async fn main() -> mlua::Result<()> {
     //         let _ = event_queue.dispatch
     //     }
     // });
+    // let dbus_runtime = tokio::runtime::Runtime::new()?;
+    // dbus_runtime.block_on(listen_for_sleep_signal())?;
 
     loop {
-        // let mut state = state.as_ref().lock().unwrap();
         event_queue.blocking_dispatch(&mut state).unwrap();
     }
 }
@@ -251,5 +284,39 @@ impl Dispatch<ext_idle_notification_v1::ExtIdleNotificationV1, NotificationConte
             ext_idle_notification_v1::Event::Resumed => "resumed",
             _ => "unknown",
         });
+        let child = run_once("swaylock");
+        match child.wait().await {
+            Ok(status) => println!("Child process exited with: {:?}", status),
+            Err(e) => eprintln!("Failed to wait on child process: {}", e),
+        }
     }
 }
+
+// async fn listen_for_sleep_signal() -> anyhow::Result<()> {
+//     // Establish a connection to the D-Bus system bus
+//     let connection = zbus::Connection::system().await?;
+
+//     // Create a proxy to the login1 Manager interface
+//     let proxy = connection.
+//         .proxy(
+//             "org.freedesktop.login1",
+//             "/org/freedesktop/login1",
+//             std::time::Duration::from_secs(30),
+//         )
+//         .await?;
+
+//     // Listen for the PrepareForSleep signal
+//     proxy
+//         .connect_signal(|_: (bool,)| {
+//             println!("Received PrepareForSleep signal");
+//             // Execute swaylock here
+//             // Note: You might want to handle this asynchronously or in a separate thread
+//             if let Err(e) = Command::new("swaylock").spawn() {
+//                 eprintln!("Failed to execute swaylock: {}", e);
+//             }
+//             Ok(())
+//         })
+//         .await?;
+
+//     Ok(())
+// }
