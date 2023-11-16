@@ -1,5 +1,6 @@
 use clap::Parser;
 use mlua::{Function, Lua, UserData, UserDataMethods};
+use std::fs;
 use wayland_client::protocol::{wl_registry, wl_seat};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
 use wayland_protocols::ext::idle_notify::v1::client::{
@@ -67,10 +68,6 @@ async fn main() -> mlua::Result<()> {
         lua: Lua::new(),
     };
 
-    {
-        state.lua.sandbox(true)?;
-    }
-
     // Run the event loop in a separate async task
     // task::spawn(async move {
     //     loop {
@@ -92,6 +89,79 @@ async fn main() -> mlua::Result<()> {
     // ...
 }
 
+// fn idle_notification_cb(
+//     lua_cb: Function,
+//     ctx: EventCtx<State, ExtIdleNotificationV1>,
+// ) -> mlua::Result<()> {
+//     // You will need to map the Rust event context to a format that Lua can understand.
+//     // This example assumes you've created a way to map `ctx.event` to a Lua value.
+//     // let event_value = map_event_ctx_to_lua_value(ctx)?;
+//     //
+//     // // Call the Lua function with the event value.
+//     // lua_cb.call::<_, ()>(event_value)?;
+//     Ok(())
+// }
+fn create_notifications(state: &mut State, qh: &QueueHandle<State>) {
+    for i in 1..10 {
+        let userdatarequest = NotificationContext { id: i };
+        let _notification = state.idle_notifier.as_ref().unwrap().get_idle_notification(
+            i * 1000,
+            state.wl_seat.as_ref().unwrap(),
+            &qh,
+            userdatarequest,
+        );
+    }
+}
+
+fn lua_init(state: &mut State) -> mlua::Result<()> {
+    let args = Args::parse();
+
+    // let shared_state = Arc::new(Mutex::new(SharedState { counter: 0 }));
+    let lua = Lua::new();
+    lua.sandbox(true)?;
+
+    let config_path = args.config;
+    let config_script = fs::read_to_string(config_path)?;
+    lua.load(&config_script).exec()?;
+
+    Ok(())
+    // state.lua.context(|lua_ctx| {
+    //     let globals = lua_ctx.globals();
+    //     let my_lua_functions = MyLuaFunctions {};
+    //     globals.set("my_lua_functions", my_lua_functions)?;
+
+    //     let result = lua_ctx.load_file(&config).eval::<()>();
+    //     match result {
+    //         Ok(_) => println!("Lua config loaded successfully"),
+    //         Err(e) => println!("Error loading Lua config: {}", e),
+    //     }
+
+    //     Ok(())
+    // })
+}
+
+struct MyLuaFunctions;
+
+impl UserData for MyLuaFunctions {
+    fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
+        methods.add_function("idle_notification", |lua, timeout: i32| {
+            // |lua, (timeout, lua_cb): (i32, Function)| {
+            // let idle_notifier = // Initialize or retrieve your idle_notifier instance
+            // let userdatarequest = NotificationContext { id: i };
+
+            println!("Idle Notification: {:?}", timeout);
+            // let _notification = state.idle_notifier.as_ref().unwrap().get_idle_notification(
+            //     timeout * 1000,
+            //     state.wl_seat.as_ref().unwrap(),
+            //     &qh,
+            //     userdatarequest,
+            // );
+
+            Ok(())
+        });
+    }
+}
+
 impl Dispatch<wl_registry::WlRegistry, ()> for State {
     fn event(
         state: &mut Self,
@@ -110,16 +180,10 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                     let wl_seat = registry.bind::<wl_seat::WlSeat, _, _>(name, 1, qh, ());
                     state.wl_seat = Some(wl_seat);
                     println!("Seat: {:?}", name);
-                    for i in 1..10 {
-                        let userdatarequest = NotificationContext { id: i };
-                        let _notification =
-                            state.idle_notifier.as_ref().unwrap().get_idle_notification(
-                                i * 1000,
-                                state.wl_seat.as_ref().unwrap(),
-                                &qh,
-                                userdatarequest,
-                            );
-                    }
+
+                    lua_init(state);
+
+                    // create_notifications(state, &qh);
                 }
                 "ext_idle_notifier_v1" => {
                     let idle_notifier = registry
