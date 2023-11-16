@@ -1,14 +1,34 @@
 use clap::Parser;
 use mlua::{Function, Lua, UserData, UserDataMethods};
 use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::Write;
+use std::path::PathBuf;
+use std::println;
 use std::sync::{Arc, Mutex};
-use std::{fs, println};
 use uuid::Uuid;
 use wayland_client::protocol::{wl_registry, wl_seat};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
 use wayland_protocols::ext::idle_notify::v1::client::{
     ext_idle_notification_v1, ext_idle_notifier_v1,
 };
+use xdg::BaseDirectories;
+
+const APP_NAME: &str = "swayidle-rs";
+const CONFIG_FILE: &str = include_str!("../lua_configs/idle_config.lua");
+
+fn ensure_config_file_exists(filename: &str) -> std::io::Result<()> {
+    let xdg_dirs = BaseDirectories::with_prefix(APP_NAME)?;
+    let config_path: PathBuf = xdg_dirs.place_config_file(filename)?;
+
+    if !config_path.exists() {
+        // Write the default settings to the file
+        let mut file = File::create(&config_path)?;
+        file.write_all(CONFIG_FILE.as_bytes())?;
+    }
+
+    Ok(())
+}
 
 #[derive(Debug)]
 pub enum Request {
@@ -18,7 +38,7 @@ pub enum Request {
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(short, long, default_value = "lua_configs/idle_config.lua")]
+    #[arg(short, long, default_value = "idle_config.lua")]
     config: String,
 }
 
@@ -95,6 +115,8 @@ async fn main() -> mlua::Result<()> {
         notification_list: shared_map.clone(),
         lua: Lua::new(),
     };
+
+    let _ = ensure_config_file_exists("idle_config.lua");
     // Run the event loop in a separate async task
     // task::spawn(async move {
     //     loop {
@@ -128,7 +150,7 @@ fn _create_notifications(state: &mut State, qh: &QueueHandle<State>) {
     }
 }
 
-fn lua_init(state: &mut State) -> mlua::Result<()> {
+fn lua_init(state: &mut State) -> anyhow::Result<()> {
     let args = Args::parse();
 
     let lua = &state.lua;
@@ -143,7 +165,8 @@ fn lua_init(state: &mut State) -> mlua::Result<()> {
     let globals = state.lua.globals();
     globals.set("IdleNotifier", my_lua_functions)?;
 
-    let config_path = args.config;
+    let xdg_dirs = BaseDirectories::with_prefix(APP_NAME)?;
+    let config_path: PathBuf = xdg_dirs.place_config_file(args.config)?;
     let config_script = fs::read_to_string(config_path)?;
 
     let _result = lua.load(&config_script).exec()?;

@@ -6,6 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+anyhow = "1.0.75"
 clap = { version = "4.4.8", features = ["derive"] }
 futures = { version = "0.3.29", features = ["compat"] }
 futures-channel = "0.3.29"
@@ -15,4 +16,5 @@ tokio = { version = "1.32.0", features = ["rt", "macros", "process", "rt-multi-t
 uuid = { version = "1.5.0", features = ["fast-rng", "v4"] }
 wayland-client = "0.31.1"
 wayland-protocols = { version = "0.31.0", features = ["client", "staging"] }
+xdg = "2.5.2"
 zbus = { version = "3.14.1", features = ["tokio"] }
