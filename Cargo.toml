@@ -12,6 +12,7 @@ futures-channel = "0.3.29"
 futures-util = { version = "0.3.29", features = ["futures-channel"] }
 mlua = { version = "0.9.1", features = ["async", "luau", "send"] }
 tokio = { version = "1.32.0", features = ["rt", "macros", "process", "rt-multi-thread"] }
+uuid = { version = "1.5.0", features = ["fast-rng", "v4"] }
 wayland-client = "0.31.1"
 wayland-protocols = { version = "0.31.0", features = ["client", "staging"] }
 zbus = { version = "3.14.1", features = ["tokio"] }

@@ -1,5 +1,7 @@
 print("Loading idle_config.lua")
-return {
-  idle_duration = 600,  -- in seconds
-  idle_script = "/path/to/script.sh"
-}
+
+idle_notifier:get_notification(5, function()
+    print("Idle for 10 seconds")
+end)
+
+print("Finished loading idle_config.lua")
