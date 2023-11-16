@@ -1,7 +1,7 @@
 use clap::Parser;
 use mlua::{Function, Lua, UserData, UserDataMethods};
 use std::collections::HashMap;
-use std::fs;
+use std::{fs, println};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 use wayland_client::protocol::{wl_registry, wl_seat};
@@ -44,30 +44,36 @@ struct Args {
     config: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct State {
     wl_seat: Option<wl_seat::WlSeat>,
     qh: QueueHandle<State>,
     idle_notifier: Option<ext_idle_notifier_v1::ExtIdleNotifierV1>,
     notification_list: NotificationListHandle,
+    lua: Lua,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct NotificationContext {
     uuid: Uuid,
     // idle_cb: Function,
 }
 
 struct MyLuaFunctions {
-    state: State,
+    wl_seat: Option<wl_seat::WlSeat>,
+    qh: QueueHandle<State>,
+    idle_notifier: Option<ext_idle_notifier_v1::ExtIdleNotifierV1>,
+    notification_list: NotificationListHandle,
 }
+
+type StateHandle = Arc<Mutex<State>>;
 
 type NotificationListHandle = Arc<
     Mutex<
         HashMap<
             Uuid,
             (
-                Function<'static>,
+                String,
                 ext_idle_notification_v1::ExtIdleNotificationV1,
             ),
         >,
@@ -78,24 +84,24 @@ impl UserData for MyLuaFunctions {
     fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
         methods.add_method(
             "get_notification",
-            |_lua, this, (timeout, callback): (i32, Function)| {
+            |_lua, this, (timeout, fn_name): (i32, String)| {
                 let ctx = NotificationContext {
                     uuid: generate_uuid(),
                 };
 
                 let notification = this
-                    .state
                     .idle_notifier
                     .as_ref()
                     .unwrap()
                     .get_idle_notification(
                         (timeout * 1000).try_into().unwrap(),
-                        this.state.wl_seat.as_ref().unwrap(),
-                        &this.state.qh,
-                        ctx,
+                        this.wl_seat.as_ref().unwrap(),
+                        &this.qh,
+                        ctx.clone(),
                     );
 
-                // map.insert(ctx.uuid, (callback, notification));
+                let mut map = this.notification_list.lock().unwrap();
+                map.insert(ctx.uuid, (fn_name, notification));
 
                 Ok(())
             },
@@ -119,20 +125,28 @@ async fn main() -> mlua::Result<()> {
     let map: HashMap<
         Uuid,
         (
-            mlua::Function,
+            String,
             ext_idle_notification_v1::ExtIdleNotificationV1,
         ),
     > = HashMap::new();
     let shared_map = Arc::new(Mutex::new(map));
 
+    // let mut state = State {
+    //     wl_seat: None,
+    //     idle_notifier: None,
+    //     qh: qhandle,
+    //     // notification_list: shared_map,
+    //     lua: Lua::new(),
+    // };
     let mut state = State {
         wl_seat: None,
         idle_notifier: None,
-        qh: qhandle,
-        notification_list: shared_map,
-        // lua: Lua::new(),
+        qh: qhandle.clone(),
+        notification_list: shared_map.clone(),
+        lua: Lua::new(),
     };
-
+    {
+    }
     // Run the event loop in a separate async task
     // task::spawn(async move {
     //     loop {
@@ -147,6 +161,7 @@ async fn main() -> mlua::Result<()> {
     // });
 
     loop {
+        // let mut state = state.as_ref().lock().unwrap();
         event_queue.blocking_dispatch(&mut state).unwrap();
         // tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
@@ -171,18 +186,20 @@ fn _create_notifications(state: &mut State, qh: &QueueHandle<State>) {
 fn lua_init(state: &mut State) -> mlua::Result<()> {
     let args = Args::parse();
 
-    // let lua = &state.lua;
-    let lua = Lua::new();
+    let lua = &state.lua;
     lua.sandbox(true)?;
+    let my_lua_functions = MyLuaFunctions { 
+        wl_seat: state.wl_seat.clone(),
+        idle_notifier: state.idle_notifier.clone(),
+        qh: state.qh.clone(),
+        notification_list: state.notification_list.clone(),
+    };
+
+    let globals = state.lua.globals();
+    globals.set("idle_notifier", my_lua_functions)?;
 
     let config_path = args.config;
     let config_script = fs::read_to_string(config_path)?;
-
-    let globals = lua.globals();
-    let my_lua_functions = MyLuaFunctions {
-        state: state.clone(),
-    };
-    globals.set("idle_notifier", my_lua_functions)?;
 
     let _result = lua.load(&config_script).exec()?;
     // match result {
@@ -264,6 +281,9 @@ impl Dispatch<ext_idle_notification_v1::ExtIdleNotificationV1, NotificationConte
     ) {
         println!("Idle Notification: {:?} {:?}", event, ctx.uuid);
         let mut map = state.notification_list.lock().unwrap();
-        // println!("{}", map.);
+        let globals = state.lua.globals();
+        let tostring: Function = globals.get("NotifyToast").unwrap();
+        tostring.call::<_, ()>(());
+        // state.lua.call::<_, ()>(map.get(&ctx.uuid).unwrap().0, ())?;
     }
 }
