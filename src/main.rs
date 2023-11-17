@@ -9,6 +9,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use sysinfo::{ProcessExt, System, SystemExt};
 use tokio::process::Command;
+use tokio::sync::mpsc;
 use uuid::Uuid;
 use wayland_client::protocol::{wl_registry, wl_seat};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
@@ -63,6 +64,7 @@ fn ensure_config_file_exists(filename: &str) -> std::io::Result<()> {
 #[derive(Debug)]
 pub enum Request {
     Reload,
+    Command(String),
 }
 
 #[derive(Parser, Debug)]
@@ -78,7 +80,7 @@ struct State {
     qh: QueueHandle<State>,
     idle_notifier: Option<ext_idle_notifier_v1::ExtIdleNotifierV1>,
     notification_list: NotificationListHandle,
-    rt_handle: tokio::runtime::Handle,
+    tx: mpsc::Sender<Request>,
     lua: Lua,
 }
 
@@ -126,7 +128,7 @@ fn generate_uuid() -> uuid::Uuid {
     Uuid::new_v4()
 }
 
-pub async fn wayland_run() -> anyhow::Result<(), Box<dyn std::error::Error>> {
+pub async fn wayland_run(tx: &mut mpsc::Sender<Request>) -> anyhow::Result<()> {
     let conn = Connection::connect_to_env().unwrap();
     let mut event_queue: EventQueue<State> = conn.new_event_queue();
     let qhandle = event_queue.handle();
@@ -143,7 +145,7 @@ pub async fn wayland_run() -> anyhow::Result<(), Box<dyn std::error::Error>> {
         idle_notifier: None,
         qh: qhandle.clone(),
         notification_list: shared_map.clone(),
-        rt_handle: tokio::runtime::Handle::current(),
+        tx: tx.clone(),
         lua: Lua::new(),
     };
 
@@ -157,15 +159,46 @@ pub async fn wayland_run() -> anyhow::Result<(), Box<dyn std::error::Error>> {
 async fn main() -> anyhow::Result<()> {
     let _ = ensure_config_file_exists("idle_config.lua");
     // Run the event loop in a separate async task
-    let _ = wayland_run().await;
+    let (tx, mut rx) = mpsc::channel(32);
+    let _ = wayland_run(&mut tx.clone()).await;
     println!("Restarting event loop");
-    // task::spawn(async move {
-    //     loop {
-    //         let _ = event_queue.dispatch
-    //     }
-    // });
     // let dbus_runtime = tokio::runtime::Runtime::new()?;
     // dbus_runtime.block_on(listen_for_sleep_signal())?;
+    tokio::task::spawn(async move {
+        while let Some(command) = rx.recv().await {
+            match command {
+                Request::Reload => {
+                    // Handle the Reload command
+                }
+                Request::Command(cmd) => {
+                    println!("Received command: {:?}", cmd);
+                    // Execute the swaylock command if received
+                    if cmd == "swaylock -f" {
+                        // Spawn the swaylock process with -f flag
+                        let mut child = Command::new("swaylock")
+                            .arg("-f")
+                            .spawn()
+                            .expect("Failed to spawn swaylock process");
+
+                        // You can handle the process's output or lifecycle here
+                        // For example, to wait for the process to complete:
+                        let _ = child.wait().await.expect("swaylock process failed to run");
+                    }
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .unwrap();
+    // if command//  == "Command" {
+    //     // Spawn the swaylock process
+    //     let mut child = Command::new("swaylock")
+    //         .spawn()
+    //         .expect("Failed to spawn swaylock process");
+
+    //     // Optionally, you can handle the process's output or lifecycle here
+    // }
 
     // loop {
     // }
@@ -288,11 +321,11 @@ impl Dispatch<ext_idle_notification_v1::ExtIdleNotificationV1, NotificationConte
             _ => "unknown",
         });
         if let ext_idle_notification_v1::Event::Idled = event {
-            println!("Running swaylock");
-            state.rt_handle.spawn(async {
-                println!("Running swaylock2");
-                let _ = run_once().await;
-            });
+            // println!("Running swaylock");
+            state
+                .tx
+                .blocking_send(Request::Command("swaylock -f".to_string()))
+                .unwrap();
         }
     }
 }
