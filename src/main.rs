@@ -28,9 +28,10 @@ async fn run_once() -> anyhow::Result<(), Box<dyn std::error::Error>> {
         .processes_by_exact_name("swaylock")
         .any(|p| p.name() == "swaylock");
     // let is_running = s.processes().values().any(|p| p.name() == "swaylock");
+    println!("swaylock 1");
 
     if !is_running {
-        println!("swaylock is ");
+        println!("swaylock 2");
         let mut command = Command::new("swaylock")
             .args(["-f"])
             .stdout(Stdio::null())
@@ -77,6 +78,7 @@ struct State {
     qh: QueueHandle<State>,
     idle_notifier: Option<ext_idle_notifier_v1::ExtIdleNotifierV1>,
     notification_list: NotificationListHandle,
+    rt_handle: tokio::runtime::Handle,
     lua: Lua,
 }
 
@@ -141,6 +143,7 @@ pub async fn wayland_run() -> anyhow::Result<(), Box<dyn std::error::Error>> {
         idle_notifier: None,
         qh: qhandle.clone(),
         notification_list: shared_map.clone(),
+        rt_handle: tokio::runtime::Handle::current(),
         lua: Lua::new(),
     };
 
@@ -285,7 +288,9 @@ impl Dispatch<ext_idle_notification_v1::ExtIdleNotificationV1, NotificationConte
             _ => "unknown",
         });
         if let ext_idle_notification_v1::Event::Idled = event {
-            tokio::task::spawn(async move {
+            println!("Running swaylock");
+            state.rt_handle.spawn(async {
+                println!("Running swaylock2");
                 let _ = run_once().await;
             });
         }
