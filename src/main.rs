@@ -3,13 +3,12 @@ use mlua::{Function, Lua, UserData, UserDataMethods};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::println;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use sysinfo::{ProcessExt, System, SystemExt};
-// use tokio::process::Command;
+use tokio::process::Command;
 use uuid::Uuid;
 use wayland_client::protocol::{wl_registry, wl_seat};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
@@ -21,8 +20,8 @@ use xdg::BaseDirectories;
 const APP_NAME: &str = "swayidle-rs";
 const CONFIG_FILE: &str = include_str!("../lua_configs/idle_config.lua");
 
-fn run_once(command: &str) {
-    let mut s = System::new_all();
+async fn run_once() -> anyhow::Result<(), Box<dyn std::error::Error>> {
+    let s = System::new_all();
     // Check if 'swaylock' is already running
 
     let is_running = s
@@ -32,22 +31,18 @@ fn run_once(command: &str) {
 
     if !is_running {
         println!("swaylock is ");
-        let mut command = Command::new("swaylock");
-        command
+        let mut command = Command::new("swaylock")
             .args(["-f"])
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        unsafe {
-            command.pre_exec(|| {
-                // Ignore SIGINT and SIGTERM signals
-                // libc::signal(libc::SIGINT, libc::SIG_IGN);
-                // libc::signal(libc::SIGTERM, libc::SIG_IGN);
-                Ok(())
-            });
-        }
-        command.spawn().expect("failed to execute process");
+            .stderr(Stdio::null())
+            .spawn()?;
+        let status = command.wait().await?;
+
+        println!("The command exited with: {}", status);
+        Ok(())
     } else {
         println!("swaylock is already running");
+        Ok(())
     }
 }
 
@@ -129,8 +124,7 @@ fn generate_uuid() -> uuid::Uuid {
     Uuid::new_v4()
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+pub async fn wayland_run() -> anyhow::Result<(), Box<dyn std::error::Error>> {
     let conn = Connection::connect_to_env().unwrap();
     let mut event_queue: EventQueue<State> = conn.new_event_queue();
     let qhandle = event_queue.handle();
@@ -150,14 +144,18 @@ async fn main() -> anyhow::Result<()> {
         lua: Lua::new(),
     };
 
+    tokio::task::spawn_blocking(move || loop {
+        event_queue.blocking_dispatch(&mut state).unwrap();
+    });
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let _ = ensure_config_file_exists("idle_config.lua");
     // Run the event loop in a separate async task
-    // task::spawn(async move {
-    //     loop {
-    //         let _ = event_queue.dispatch_pending(&mut state).unwrap();
-    //         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    //     }
-    // });
+    let _ = wayland_run().await;
+    println!("Restarting event loop");
     // task::spawn(async move {
     //     loop {
     //         let _ = event_queue.dispatch
@@ -166,9 +164,9 @@ async fn main() -> anyhow::Result<()> {
     // let dbus_runtime = tokio::runtime::Runtime::new()?;
     // dbus_runtime.block_on(listen_for_sleep_signal())?;
 
-    loop {
-        event_queue.blocking_dispatch(&mut state).unwrap();
-    }
+    // loop {
+    // }
+    Ok(())
 }
 
 fn _create_notifications(state: &mut State, qh: &QueueHandle<State>) {
@@ -286,7 +284,11 @@ impl Dispatch<ext_idle_notification_v1::ExtIdleNotificationV1, NotificationConte
             ext_idle_notification_v1::Event::Resumed => "resumed",
             _ => "unknown",
         });
-        run_once("swaylock");
+        if let ext_idle_notification_v1::Event::Idled = event {
+            tokio::task::spawn(async move {
+                let _ = run_once().await;
+            });
+        }
     }
 }
 
