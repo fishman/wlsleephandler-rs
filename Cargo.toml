@@ -8,9 +8,12 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.75"
 clap = { version = "4.4.8", features = ["derive"] }
+env_logger = "0.10.1"
 futures = { version = "0.3.29", features = ["compat"] }
 futures-channel = "0.3.29"
 futures-util = { version = "0.3.29", features = ["futures-channel"] }
+inotify = "0.10.2"
+log = "0.4.20"
 mlua = { version = "0.9.1", features = ["async", "luau", "send"] }
 sysinfo = "0.29.10"
 tokio = { version = "1.32.0", features = ["rt", "macros", "process", "rt-multi-thread"] }

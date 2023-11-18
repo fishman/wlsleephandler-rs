@@ -115,9 +115,15 @@ fn generate_uuid() -> uuid::Uuid {
 
 pub async fn wayland_run(
     tx: &mut mpsc::Sender<Request>,
-    qh: QueueHandle<State>,
     shared_map: NotificationListHandle,
 ) -> anyhow::Result<()> {
+    let conn = Connection::connect_to_env().unwrap();
+    let mut event_queue: EventQueue<State> = conn.new_event_queue();
+    let qhandle = event_queue.handle();
+
+    let display = conn.display();
+    display.get_registry(&qhandle, ());
+
     let mut state = State {
         wl_seat: None,
         idle_notifier: None,
@@ -163,19 +169,16 @@ pub async fn filewatcher_run(config_path: &Path, tx: mpsc::Sender<Request>) -> a
 }
 
 async fn process_command(
-    tx: &mut mpsc::Sender<Request>,
+    // qh: QueueHandle<State>,
     rx: &mut mpsc::Receiver<Request>,
-    qh: QueueHandle<State>,
     shared_map: NotificationListHandle,
 ) {
-    let state = State {
-        qh: qh.clone(),
-        notification_list: shared_map.clone(),
-        lua: Lua::new(),
-    };
-
+    // let mut state = State {
+    //     qh: qh.clone(),
+    //     notification_list: shared_map.clone(),
+    //     tx: mpsc::channel(32).0,
+    // };
     while let Some(event) = rx.recv().await {
-        println!("Received command: {:?}", event);
         match event {
             Request::Reload => {
                 debug!("Reloading config");
@@ -190,11 +193,14 @@ async fn process_command(
             }
             Request::InitLua(wl_seat, idle_notifier) => {
                 debug!("Initializing Lua");
-                if state.wl_seat.is_none() || state.idle_notifier.is_none() {
-                    state.wl_seat = Some(wl_seat.clone());
-                    state.idle_notifier = Some(idle_notifier.clone());
-                }
-                let _ = lua_init(&mut state);
+                // let _ = lua_init(&mut State {
+                //     wl_seat: Some(wl_seat),
+                //     qh: QueueHandle::dummy(),
+                //     idle_notifier: Some(idle_notifier),
+                //     notification_list: shared_map.clone(),
+                //     tx: mpsc::channel(32).0,
+                //     lua: Lua::new(),
+                // });
             }
         }
     }
@@ -207,24 +213,18 @@ async fn main() -> anyhow::Result<()> {
     // Run the event loop in a separate async task
     let (tx, mut rx) = mpsc::channel(32);
 
-    let conn = Connection::connect_to_env().unwrap();
-    let mut event_queue: EventQueue<State> = conn.new_event_queue();
-    let qhandle = event_queue.handle();
-
-    let display = conn.display();
-    display.get_registry(&qhandle, ());
-
     let map: HashMap<Uuid, (String, ext_idle_notification_v1::ExtIdleNotificationV1)> =
         HashMap::new();
     let shared_map = Arc::new(Mutex::new(map));
 
+    listen_for_ac().await?;
     let config_path = utils::xdg_config_path(None)?;
     let _task = filewatcher_run(&config_path, tx.clone())
         .await
         .expect("Failed to spawn task");
-    let _ = wayland_run(&mut tx.clone(), qhandle.clone(), shared_map.clone()).await;
+    let _ = wayland_run(&mut tx.clone(), shared_map.clone()).await;
     tokio::task::spawn(async move {
-        process_command(&mut tx, &mut rx, qhandle.clone(), shared_map.clone()).await;
+        process_command(&mut rx, shared_map.clone()).await;
     })
     .await
     .unwrap();
@@ -272,13 +272,13 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
             match &interface[..] {
                 "wl_seat" => {
                     let wl_seat = registry.bind::<wl_seat::WlSeat, _, _>(name, 1, qh, ());
-                    state.wl_seat = Some(wl_seat);
+                    state.wl_seat = Some(wl_seat.clone());
                     debug!("wl_seat: {:?}", name);
-
                     let _ = state.tx.blocking_send(Request::InitLua(
                         wl_seat.clone(),
                         state.idle_notifier.as_ref().unwrap().clone(),
                     ));
+                    let _ = lua_init(state);
                 }
                 "ext_idle_notifier_v1" => {
                     let idle_notifier = registry
@@ -339,9 +339,20 @@ impl Dispatch<ext_idle_notification_v1::ExtIdleNotificationV1, NotificationConte
     }
 }
 
-async fn listen_for_sleep_signal() -> anyhow::Result<()> {
+async fn listen_for_ac() -> anyhow::Result<()> {
     // Establish a connection to the D-Bus system bus
     let connection = zbus::Connection::system().await?;
+    let proxy = zbus::Proxy::new(
+        &connection,
+        "org.freedesktop.UPower",
+        "/org/freedesktop/UPower/devices/line_power_AC",
+        "org.freedesktop.UPower.Device",
+    )
+    .await?;
+
+    // Example: Get a property (like the state of the AC power)
+    let state: u32 = proxy.get_property("State").await?;
+    println!("AC power state: {}", state);
 
     Ok(())
 }
