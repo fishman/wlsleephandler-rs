@@ -35,7 +35,8 @@ fn ensure_config_file_exists(filename: &str) -> std::io::Result<()> {
 
 #[derive(Debug)]
 pub enum Request {
-    Reload,
+    LuaReload,
+    Reset,
     RunOnce(String),
 }
 
@@ -84,6 +85,7 @@ impl UserData for MyLuaFunctions {
         methods.add_method(
             "get_notification",
             |_lua, this, (timeout, fn_name): (i32, String)| {
+                debug!("get_notification: {} timeout: {} seconds", fn_name, timeout);
                 let ctx = NotificationContext {
                     uuid: generate_uuid(),
                 };
@@ -95,8 +97,11 @@ impl UserData for MyLuaFunctions {
                     ctx.clone(),
                 );
 
-                let mut map = this.notification_list.lock().unwrap();
-                map.insert(ctx.uuid, (fn_name, notification));
+                {
+                    let mut map = this.notification_list.lock().unwrap();
+                    map.insert(ctx.uuid, (fn_name, notification));
+                }
+                debug!("insert map: {}", ctx.uuid);
 
                 Ok(())
             },
@@ -171,12 +176,13 @@ pub async fn filewatcher_run(config_path: &Path, tx: mpsc::Sender<Request>) -> a
             .read_events_blocking(&mut buffer)
             .expect("Failed to read inotify events");
 
+        debug!("Received events");
         for event in events {
             debug!("File modified: {:?}", event.name);
             if event.mask.contains(EventMask::MODIFY) {
                 if !event.mask.contains(EventMask::ISDIR) {
                     debug!("File modified: {:?}", event.name);
-                    tx.blocking_send(Request::Reload).unwrap();
+                    tx.blocking_send(Request::Reset).unwrap();
                 }
             }
         }
@@ -186,6 +192,7 @@ pub async fn filewatcher_run(config_path: &Path, tx: mpsc::Sender<Request>) -> a
 
 async fn process_command(
     lua: LuaHandle,
+    tx: &mut mpsc::Sender<Request>,
     rx: &mut mpsc::Receiver<Request>,
     shared_map: NotificationListHandle,
 ) {
@@ -196,13 +203,18 @@ async fn process_command(
     // };
     while let Some(event) = rx.recv().await {
         match event {
-            Request::Reload => {
+            Request::Reset => {
                 debug!("Reloading config");
-                let map = shared_map.lock().unwrap();
-                for (_, (_, notification)) in map.iter() {
-                    notification.destroy();
+                {
+                    let map = shared_map.lock().unwrap();
+                    for (_, (_, notification)) in map.iter() {
+                        notification.destroy();
+                    }
                 }
-
+                tx.send(Request::LuaReload).await.unwrap();
+            }
+            Request::LuaReload => {
+                debug!("Reloading lua config");
                 let lua = lua.lock().unwrap();
                 let _ = lua_load_config(&lua).unwrap();
             }
@@ -233,7 +245,7 @@ async fn main() -> anyhow::Result<()> {
         .expect("Failed to spawn task");
     let _ = wayland_run(lua.clone(), &mut tx.clone(), shared_map.clone()).await;
     tokio::task::spawn(async move {
-        process_command(lua.clone(), &mut rx, shared_map.clone()).await;
+        process_command(lua.clone(), &mut tx.clone(), &mut rx, shared_map.clone()).await;
     })
     .await
     .unwrap();
