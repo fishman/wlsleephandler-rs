@@ -9,6 +9,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use uuid::Uuid;
+use wayland_client::backend::ReadEventsGuard;
 use wayland_client::protocol::{wl_registry, wl_seat};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
 use wayland_protocols::ext::idle_notify::v1::client::{
@@ -36,7 +37,6 @@ fn ensure_config_file_exists(filename: &str) -> std::io::Result<()> {
 pub enum Request {
     Reload,
     RunOnce(String),
-    InitLua(wl_seat::WlSeat, ext_idle_notifier_v1::ExtIdleNotifierV1),
 }
 
 #[derive(Debug)]
@@ -58,7 +58,7 @@ struct State {
     idle_notifier: Option<ext_idle_notifier_v1::ExtIdleNotifierV1>,
     notification_list: NotificationListHandle,
     tx: mpsc::Sender<Request>,
-    lua: Lua,
+    lua: LuaHandle,
 }
 
 #[derive(Clone, Debug)]
@@ -76,6 +76,8 @@ struct MyLuaFunctions {
 
 type NotificationListHandle =
     Arc<Mutex<HashMap<Uuid, (String, ext_idle_notification_v1::ExtIdleNotificationV1)>>>;
+
+type LuaHandle = Arc<Mutex<Lua>>;
 
 impl UserData for MyLuaFunctions {
     fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
@@ -114,9 +116,10 @@ fn generate_uuid() -> uuid::Uuid {
 }
 
 pub async fn wayland_run(
+    lua: LuaHandle,
     tx: &mut mpsc::Sender<Request>,
     shared_map: NotificationListHandle,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<(), anyhow::Error> {
     let conn = Connection::connect_to_env().unwrap();
     let mut event_queue: EventQueue<State> = conn.new_event_queue();
     let qhandle = event_queue.handle();
@@ -130,13 +133,25 @@ pub async fn wayland_run(
         qh: qhandle.clone(),
         notification_list: shared_map.clone(),
         tx: tx.clone(),
-        lua: Lua::new(),
+        lua,
     };
 
-    tokio::task::spawn_blocking(move || loop {
+    let _ = tokio::task::spawn_blocking(move || loop {
         event_queue.blocking_dispatch(&mut state).unwrap();
     });
     Ok(())
+}
+
+async fn wait_for_wayland_event(
+    read_guard: ReadEventsGuard,
+    event_queue: &mut EventQueue<State>,
+    state: &mut State,
+) {
+    // to turn synchronous Wayland socket events into async events
+    // If epoll notified readiness of the Wayland socket, you can now proceed to the read
+    read_guard.read().unwrap();
+    // And now, you must invoke dispatch_pending() to actually process the events
+    event_queue.dispatch_pending(state).unwrap();
 }
 
 pub async fn filewatcher_run(config_path: &Path, tx: mpsc::Sender<Request>) -> anyhow::Result<()> {
@@ -157,6 +172,7 @@ pub async fn filewatcher_run(config_path: &Path, tx: mpsc::Sender<Request>) -> a
             .expect("Failed to read inotify events");
 
         for event in events {
+            debug!("File modified: {:?}", event.name);
             if event.mask.contains(EventMask::MODIFY) {
                 if !event.mask.contains(EventMask::ISDIR) {
                     debug!("File modified: {:?}", event.name);
@@ -169,7 +185,7 @@ pub async fn filewatcher_run(config_path: &Path, tx: mpsc::Sender<Request>) -> a
 }
 
 async fn process_command(
-    // qh: QueueHandle<State>,
+    lua: LuaHandle,
     rx: &mut mpsc::Receiver<Request>,
     shared_map: NotificationListHandle,
 ) {
@@ -186,21 +202,13 @@ async fn process_command(
                 for (_, (_, notification)) in map.iter() {
                     notification.destroy();
                 }
+
+                let lua = lua.lock().unwrap();
+                let _ = lua_load_config(&lua).unwrap();
             }
             Request::RunOnce(cmd) => {
                 debug!("Running command: {}", cmd);
                 let _ = utils::run_once(cmd).await;
-            }
-            Request::InitLua(wl_seat, idle_notifier) => {
-                debug!("Initializing Lua");
-                // let _ = lua_init(&mut State {
-                //     wl_seat: Some(wl_seat),
-                //     qh: QueueHandle::dummy(),
-                //     idle_notifier: Some(idle_notifier),
-                //     notification_list: shared_map.clone(),
-                //     tx: mpsc::channel(32).0,
-                //     lua: Lua::new(),
-                // });
             }
         }
     }
@@ -216,15 +224,16 @@ async fn main() -> anyhow::Result<()> {
     let map: HashMap<Uuid, (String, ext_idle_notification_v1::ExtIdleNotificationV1)> =
         HashMap::new();
     let shared_map = Arc::new(Mutex::new(map));
+    let lua = Arc::new(Mutex::new(Lua::new()));
 
     listen_for_ac().await?;
     let config_path = utils::xdg_config_path(None)?;
     let _task = filewatcher_run(&config_path, tx.clone())
         .await
         .expect("Failed to spawn task");
-    let _ = wayland_run(&mut tx.clone(), shared_map.clone()).await;
+    let _ = wayland_run(lua.clone(), &mut tx.clone(), shared_map.clone()).await;
     tokio::task::spawn(async move {
-        process_command(&mut rx, shared_map.clone()).await;
+        process_command(lua.clone(), &mut rx, shared_map.clone()).await;
     })
     .await
     .unwrap();
@@ -232,10 +241,18 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn lua_init(state: &mut State) -> anyhow::Result<()> {
+fn lua_load_config(lua: &Lua) -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let lua = &state.lua;
+    let config_path = utils::xdg_config_path(Some(args.config))?;
+    let config = fs::read_to_string(config_path)?;
+    let result = lua.load(&config).exec()?;
+
+    Ok(result)
+}
+
+fn lua_init(state: &mut State) -> anyhow::Result<()> {
+    let lua = state.lua.lock().unwrap();
     lua.sandbox(true)?;
     let my_lua_functions = MyLuaFunctions {
         wl_seat: state.wl_seat.clone(),
@@ -245,13 +262,9 @@ fn lua_init(state: &mut State) -> anyhow::Result<()> {
         tx: state.tx.clone(),
     };
 
-    let globals = state.lua.globals();
+    let globals = lua.globals();
     globals.set("IdleNotifier", my_lua_functions)?;
-
-    let config_path = utils::xdg_config_path(Some(args.config))?;
-    let config_script = fs::read_to_string(config_path)?;
-
-    let _result = lua.load(&config_script).exec()?;
+    lua_load_config(&lua)?;
 
     Ok(())
 }
@@ -274,10 +287,6 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                     let wl_seat = registry.bind::<wl_seat::WlSeat, _, _>(name, 1, qh, ());
                     state.wl_seat = Some(wl_seat.clone());
                     debug!("wl_seat: {:?}", name);
-                    let _ = state.tx.blocking_send(Request::InitLua(
-                        wl_seat.clone(),
-                        state.idle_notifier.as_ref().unwrap().clone(),
-                    ));
                     let _ = lua_init(state);
                 }
                 "ext_idle_notifier_v1" => {
@@ -328,7 +337,8 @@ impl Dispatch<ext_idle_notification_v1::ExtIdleNotificationV1, NotificationConte
     ) {
         debug!("Idle Notification: {:?} {:?}", event, ctx.uuid);
         let map = state.notification_list.lock().unwrap();
-        let globals = state.lua.globals();
+        let binding = state.lua.lock().unwrap();
+        let globals = binding.globals();
         let fn_name = map.get(&ctx.uuid).unwrap().0.clone();
         let tostring: Function = globals.get(fn_name).unwrap();
         let _ = tostring.call::<_, ()>(match event {
