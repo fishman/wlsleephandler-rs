@@ -17,7 +17,11 @@ use wayland_protocols::ext::idle_notify::v1::client::{
 };
 
 mod config;
+mod dbus;
+mod types;
 mod utils;
+
+use types::Request;
 
 const CONFIG_FILE: &str = include_str!("../lua_configs/idle_config.lua");
 
@@ -31,13 +35,6 @@ fn ensure_config_file_exists(filename: &str) -> std::io::Result<()> {
     }
 
     Ok(())
-}
-
-#[derive(Debug)]
-pub enum Request {
-    LuaReload,
-    Reset,
-    RunOnce(String),
 }
 
 #[derive(Debug)]
@@ -75,10 +72,21 @@ struct MyLuaFunctions {
     notification_list: NotificationListHandle,
 }
 
+#[derive(Clone, Debug)]
+struct LuaSettings {
+    on_battery: bool,
+}
+
 type NotificationListHandle =
     Arc<Mutex<HashMap<Uuid, (String, ext_idle_notification_v1::ExtIdleNotificationV1)>>>;
 
 type LuaHandle = Arc<Mutex<Lua>>;
+
+impl UserData for LuaSettings {
+    fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
+        methods.add_method("on_battery", |_lua, this, (): ()| Ok(this.on_battery));
+    }
+}
 
 impl UserData for MyLuaFunctions {
     fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
@@ -126,7 +134,7 @@ fn generate_uuid() -> uuid::Uuid {
 
 pub async fn wayland_run(
     lua: LuaHandle,
-    tx: &mut mpsc::Sender<Request>,
+    tx: mpsc::Sender<Request>,
     shared_map: NotificationListHandle,
 ) -> anyhow::Result<(), anyhow::Error> {
     let conn = Connection::connect_to_env().unwrap();
@@ -196,15 +204,11 @@ pub async fn filewatcher_run(config_path: &Path, tx: mpsc::Sender<Request>) -> a
 
 async fn process_command(
     lua: LuaHandle,
-    tx: &mut mpsc::Sender<Request>,
+    tx: mpsc::Sender<Request>,
     rx: &mut mpsc::Receiver<Request>,
     shared_map: NotificationListHandle,
-) {
-    // let mut state = State {
-    //     qh: qh.clone(),
-    //     notification_list: shared_map.clone(),
-    //     tx: mpsc::channel(32).0,
-    // };
+) -> anyhow::Result<()> {
+    let mut lua_settings = LuaSettings { on_battery: true };
     while let Some(event) = rx.recv().await {
         match event {
             Request::Reset => {
@@ -226,8 +230,14 @@ async fn process_command(
                 debug!("Running command: {}", cmd);
                 let _ = utils::run_once(cmd).await;
             }
+            Request::BatteryState(state) => {
+                let lua = lua.lock().unwrap();
+                let globals = lua.globals();
+                globals.set("Settings", LuaSettings { on_battery: state })?;
+            }
         }
     }
+    Ok(())
 }
 
 #[tokio::main]
@@ -242,17 +252,17 @@ async fn main() -> anyhow::Result<()> {
     let shared_map = Arc::new(Mutex::new(map));
     let lua = Arc::new(Mutex::new(Lua::new()));
 
-    listen_for_ac().await?;
     let config_path = utils::xdg_config_path(None)?;
     let _task = filewatcher_run(&config_path, tx.clone())
         .await
         .expect("Failed to spawn task");
-    let _ = wayland_run(lua.clone(), &mut tx.clone(), shared_map.clone()).await;
-    tokio::task::spawn(async move {
-        process_command(lua.clone(), &mut tx.clone(), &mut rx, shared_map.clone()).await;
-    })
-    .await
-    .unwrap();
+    let _ = wayland_run(lua.clone(), tx.clone(), shared_map.clone()).await;
+    tokio::try_join!(
+        dbus::upower_watcher(tx.clone()),
+        process_command(lua.clone(), tx, &mut rx, shared_map.clone())
+    )?;
+    // .await
+    // .unwrap();
 
     Ok(())
 }
@@ -280,6 +290,7 @@ fn lua_init(state: &mut State) -> anyhow::Result<()> {
 
     let globals = lua.globals();
     globals.set("IdleNotifier", my_lua_functions)?;
+    globals.set("Settings", LuaSettings { on_battery: true })?;
     lua_load_config(&lua)?;
 
     Ok(())
@@ -363,22 +374,4 @@ impl Dispatch<ext_idle_notification_v1::ExtIdleNotificationV1, NotificationConte
             _ => "unknown",
         });
     }
-}
-
-async fn listen_for_ac() -> anyhow::Result<()> {
-    // Establish a connection to the D-Bus system bus
-    let connection = zbus::Connection::system().await?;
-    let proxy = zbus::Proxy::new(
-        &connection,
-        "org.freedesktop.UPower",
-        "/org/freedesktop/UPower/devices/line_power_AC",
-        "org.freedesktop.UPower.Device",
-    )
-    .await?;
-
-    // Example: Get a property (like the state of the AC power)
-    let state: u32 = proxy.get_property("State").await?;
-    println!("AC power state: {}", state);
-
-    Ok(())
 }
