@@ -191,8 +191,45 @@ async fn process_command(
                 debug!("Running command: {}", cmd);
                 let _ = utils::run_once(cmd).await;
             }
-            Request::InitLua(wl_seat, idle_notifier) => {
+            Request::LuaFunction(fn_name, event) => {
+                debug!("Running lua function");
+                let func: Function = state.lua.globals().get(fn_name).unwrap();
+                let _ = func.call::<_, ()>(match event {
+                    ext_idle_notification_v1::Event::Idled => "idled",
+                    ext_idle_notification_v1::Event::Resumed => "resumed",
+                    _ => "unknown",
+                });
+            }
+            Request::CreateNotification(timeout, fn_name) => {
+                let ctx = NotificationContext {
+                    uuid: generate_uuid(),
+                };
+
+                debug!("Creating notification: {:?}", ctx.uuid);
+                let notification = state.idle_notifier.as_ref().unwrap().get_idle_notification(
+                    (timeout * 1000).try_into().unwrap(),
+                    state.wl_seat.as_ref().unwrap(),
+                    state.qh.as_ref().unwrap(),
+                    ctx.clone(),
+                );
+
+                let mut map = state.notification_list.lock().unwrap();
+                map.insert(ctx.uuid, (fn_name, notification));
+                debug!("Notification created: {:?}", ctx.uuid);
+            }
+            Request::LuaInit(wl_seat, idle_notifier) => {
                 debug!("Initializing Lua");
+                state.wl_seat = Some(wl_seat);
+                state.idle_notifier = Some(idle_notifier);
+                let mut lua_state = MyLuaFunctions {
+                    tx: state.tx.clone(),
+                    wl_seat: state.wl_seat.clone(),
+                    qh: state.qh,
+                    idle_notifier: state.idle_notifier.clone(),
+                    notification_list: shared_map.clone(),
+                };
+                lua_init(&mut lua_state).unwrap();
+                // state.lua = lua_init(state.tx.clone());
                 // let _ = lua_init(&mut State {
                 //     wl_seat: Some(wl_seat),
                 //     qh: QueueHandle::dummy(),
