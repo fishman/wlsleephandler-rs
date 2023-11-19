@@ -1,6 +1,6 @@
 use clap::Parser;
 use inotify::{EventMask, Inotify, WatchMask};
-use log::debug;
+use log::{debug, info};
 use mlua::{Function, Lua, UserData, UserDataMethods};
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -106,6 +106,10 @@ impl UserData for MyLuaFunctions {
                 Ok(())
             },
         );
+        methods.add_method("log", |_lua, _this, message: String| {
+            info!("{}", message);
+            Ok(())
+        });
         methods.add_method("run_once", |_lua, this, command: String| {
             debug!("Running command: {}", command);
             this.tx
