@@ -16,6 +16,12 @@ Until packaging is added you can install sleepwatcher using cargo.
 
 `cargo install --git https://github.com/fishman/sleepwatcher-rs`
 
+## Debug
+
+sleepwatcher-rs uses `env_logger`. You can enable logging by setting the `RUST_LOG` environment variable:
+
+`RUST_LOG=debug sleepwatcher-rs`
+
 ## Default config
 
 The default config is written to `~/.config/sleepwatcher-rs/idle_config.lua` on startup if the folder and file does not exist yet.
