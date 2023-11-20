@@ -10,6 +10,12 @@ This is intended as a replacement of sway's idle management daemon. I use it as 
 
 I am now using it as a replacement for any ac and battery power daemon, since I can run tasks with it.
 
+## Install
+
+Until packaging is added you can install sleepwatcher using cargo.
+
+`cargo install --git https://github.com/fishman/sleepwatcher-rs`
+
 ## Default config
 
 The default config is written to `~/.config/sleepwatcher-rs/idle_config.lua` on startup if the folder and file does not exist yet.
