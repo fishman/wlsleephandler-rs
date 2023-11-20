@@ -55,6 +55,7 @@ struct State {
     qh: QueueHandle<State>,
     idle_notifier: Option<ext_idle_notifier_v1::ExtIdleNotifierV1>,
     notification_list: NotificationListHandle,
+    dbus_handlers: CallbackListHandle,
     tx: mpsc::Sender<Request>,
     lua: LuaHandle,
 }
@@ -73,18 +74,51 @@ struct MyLuaFunctions {
 }
 
 #[derive(Clone, Debug)]
-struct LuaSettings {
+struct LuaHelpers {
     on_battery: bool,
+}
+
+#[derive(Clone, Debug)]
+struct DbusHandler {
+    handlers: CallbackListHandle,
+}
+
+impl UserData for DbusHandler {
+    fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
+        methods.add_method("PrepareSleep", |_lua, this, fn_name: String| {
+            debug!("PrepareSleep callback");
+            let mut map = this.handlers.lock().unwrap();
+            map.insert("PrepareSleep".to_string(), fn_name);
+            Ok(())
+        });
+        methods.add_method("LockHandler", |_lua, this, fn_name: String| {
+            debug!("LcokHandler callback");
+            let mut map = this.handlers.lock().unwrap();
+            map.insert("LockHandler".to_string(), fn_name);
+            Ok(())
+        });
+        methods.add_method("UnlockHandler", |_lua, this, fn_name: String| {
+            debug!("UnlcokHandler callback");
+            let mut map = this.handlers.lock().unwrap();
+            map.insert("UnlockHandler".to_string(), fn_name);
+            Ok(())
+        });
+    }
 }
 
 type NotificationListHandle =
     Arc<Mutex<HashMap<Uuid, (String, ext_idle_notification_v1::ExtIdleNotificationV1)>>>;
 
+type CallbackListHandle = Arc<Mutex<HashMap<String, String>>>;
 type LuaHandle = Arc<Mutex<Lua>>;
 
-impl UserData for LuaSettings {
+impl UserData for LuaHelpers {
     fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
         methods.add_method("on_battery", |_lua, this, (): ()| Ok(this.on_battery));
+        methods.add_method("log", |_lua, _this, message: String| {
+            info!("{}", message);
+            Ok(())
+        });
     }
 }
 
@@ -93,11 +127,14 @@ impl UserData for MyLuaFunctions {
         methods.add_method(
             "get_notification",
             |_lua, this, (timeout, fn_name): (i32, String)| {
-                debug!("get_notification: {} timeout: {} seconds", fn_name, timeout);
                 let ctx = NotificationContext {
                     uuid: generate_uuid(),
                 };
 
+                debug!(
+                    "get_notification id: {} fn: {} timeout: {} seconds",
+                    ctx.uuid, fn_name, timeout
+                );
                 let notification = this.idle_notifier.as_ref().unwrap().get_idle_notification(
                     (timeout * 1000).try_into().unwrap(),
                     this.wl_seat.as_ref().unwrap(),
@@ -109,20 +146,16 @@ impl UserData for MyLuaFunctions {
                     let mut map = this.notification_list.lock().unwrap();
                     map.insert(ctx.uuid, (fn_name, notification));
                 }
-                debug!("insert map: {}", ctx.uuid);
 
                 Ok(())
             },
         );
-        methods.add_method("log", |_lua, _this, message: String| {
-            info!("{}", message);
-            Ok(())
-        });
         methods.add_method("run_once", |_lua, this, command: String| {
-            debug!("Running command: {}", command);
-            this.tx
-                .blocking_send(Request::RunOnce(command.to_string()))
-                .unwrap();
+            let tx = this.tx.clone();
+            std::thread::spawn(move || {
+                tx.blocking_send(Request::RunOnce(command.to_string()))
+                    .unwrap();
+            });
             Ok(())
         });
     }
@@ -135,7 +168,8 @@ fn generate_uuid() -> uuid::Uuid {
 pub async fn wayland_run(
     lua: LuaHandle,
     tx: mpsc::Sender<Request>,
-    shared_map: NotificationListHandle,
+    notification_list: NotificationListHandle,
+    dbus_handlers: CallbackListHandle,
 ) -> anyhow::Result<(), anyhow::Error> {
     let conn = Connection::connect_to_env().unwrap();
     let mut event_queue: EventQueue<State> = conn.new_event_queue();
@@ -148,7 +182,8 @@ pub async fn wayland_run(
         wl_seat: None,
         idle_notifier: None,
         qh: qhandle.clone(),
-        notification_list: shared_map.clone(),
+        notification_list: notification_list.clone(),
+        dbus_handlers: dbus_handlers.clone(),
         tx: tx.clone(),
         lua,
     };
@@ -207,8 +242,8 @@ async fn process_command(
     tx: mpsc::Sender<Request>,
     rx: &mut mpsc::Receiver<Request>,
     shared_map: NotificationListHandle,
+    dbus_handlers: CallbackListHandle,
 ) -> anyhow::Result<()> {
-    let mut lua_settings = LuaSettings { on_battery: true };
     while let Some(event) = rx.recv().await {
         match event {
             Request::Reset => {
@@ -226,14 +261,33 @@ async fn process_command(
                 let lua = lua.lock().unwrap();
                 let _ = lua_load_config(&lua).unwrap();
             }
+            Request::LuaMethod(method_name) => {
+                let lua = lua.lock().unwrap();
+                let globals = lua.globals();
+                let map = dbus_handlers.lock().unwrap();
+                match map.get(&method_name) {
+                    Some(fn_name) => {
+                        let fn_name = fn_name.clone();
+                        let result: Result<Function, _> = globals.get(fn_name.clone());
+                        if let Ok(lua_func) = result {
+                            let _ = lua_func.call(())?;
+                        } else {
+                            debug!("Lua function not found: {}", fn_name);
+                        }
+                    }
+                    None => {
+                        debug!("No dbus handler found for {}", method_name);
+                    }
+                }
+            }
             Request::RunOnce(cmd) => {
                 debug!("Running command: {}", cmd);
                 let _ = utils::run_once(cmd).await;
             }
-            Request::BatteryState(state) => {
+            Request::OnBattery(state) => {
                 let lua = lua.lock().unwrap();
                 let globals = lua.globals();
-                globals.set("Settings", LuaSettings { on_battery: state })?;
+                globals.set("Helpers", LuaHelpers { on_battery: state })?;
             }
         }
     }
@@ -251,15 +305,29 @@ async fn main() -> anyhow::Result<()> {
         HashMap::new();
     let shared_map = Arc::new(Mutex::new(map));
     let lua = Arc::new(Mutex::new(Lua::new()));
+    let dbus_handlers = Arc::new(Mutex::new(HashMap::new()));
 
     let config_path = utils::xdg_config_path(None)?;
     let _task = filewatcher_run(&config_path, tx.clone())
         .await
         .expect("Failed to spawn task");
-    let _ = wayland_run(lua.clone(), tx.clone(), shared_map.clone()).await;
+    let _ = wayland_run(
+        lua.clone(),
+        tx.clone(),
+        shared_map.clone(),
+        dbus_handlers.clone(),
+    )
+    .await;
     tokio::try_join!(
         dbus::upower_watcher(tx.clone()),
-        process_command(lua.clone(), tx, &mut rx, shared_map.clone())
+        dbus::logind_watcher(tx.clone()),
+        process_command(
+            lua.clone(),
+            tx,
+            &mut rx,
+            shared_map.clone(),
+            dbus_handlers.clone()
+        ),
     )?;
     // .await
     // .unwrap();
@@ -290,7 +358,13 @@ fn lua_init(state: &mut State) -> anyhow::Result<()> {
 
     let globals = lua.globals();
     globals.set("IdleNotifier", my_lua_functions)?;
-    globals.set("Settings", LuaSettings { on_battery: true })?;
+    globals.set("Helpers", LuaHelpers { on_battery: true })?;
+    let _ = globals.set(
+        "DbusHandler",
+        DbusHandler {
+            handlers: state.dbus_handlers.clone(),
+        },
+    );
     lua_load_config(&lua)?;
 
     Ok(())
@@ -367,8 +441,8 @@ impl Dispatch<ext_idle_notification_v1::ExtIdleNotificationV1, NotificationConte
         let binding = state.lua.lock().unwrap();
         let globals = binding.globals();
         let fn_name = map.get(&ctx.uuid).unwrap().0.clone();
-        let tostring: Function = globals.get(fn_name).unwrap();
-        let _ = tostring.call::<_, ()>(match event {
+        let handler: Function = globals.get(fn_name).unwrap();
+        let _ = handler.call::<_, ()>(match event {
             ext_idle_notification_v1::Event::Idled => "idled",
             ext_idle_notification_v1::Event::Resumed => "resumed",
             _ => "unknown",

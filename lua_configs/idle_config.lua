@@ -1,21 +1,22 @@
-IdleNotifier:log("Loading idle_config.lua")
+Helpers:log("Loading idle_config.lua")
+
 function LockScreen()
-  IdleNotifier:log("Locking Screen")
+  Helpers:log("Locking Screen")
   IdleNotifier:run_once("swaylock -f")
 end
 
 function DpmsOn()
-  IdleNotifier:log("Turning screen on")
+  Helpers:log("Turning screen on")
   IdleNotifier:run_once("swaymsg output '*' dpms on")
 end
 
 function DpmsOff()
-  IdleNotifier:log("Turning screen off")
+  Helpers:log("Turning screen off")
   IdleNotifier:run_once("swaymsg output '*' dpms off")
 end
 
 function ScreenLockBattery(event)
-  if Settings:on_battery() == false then
+  if Helpers:on_battery() == false then
     return
   end
   if event == "idled" then
@@ -24,7 +25,7 @@ function ScreenLockBattery(event)
 end
 
 function ScreenDpmsBattery(event)
-  if Settings:on_battery() == false then
+  if Helpers:on_battery() == false then
     return
   end
   if event == "idled" then
@@ -35,7 +36,7 @@ function ScreenDpmsBattery(event)
 end
 
 function ScreenLockAC(event)
-  if Settings:on_battery() == true then
+  if Helpers:on_battery() == true then
     return
   end
   if event == "idled" then
@@ -44,7 +45,7 @@ function ScreenLockAC(event)
 end
 
 function ScreenDpmsAC(event)
-  if Settings:on_battery() == true then
+  if Helpers:on_battery() == true then
     return
   end
   if event == "idled" then
@@ -54,10 +55,12 @@ function ScreenDpmsAC(event)
   end
 end
 
-
-IdleNotifier:get_notification(60,  "ScreenLockBattery")
-IdleNotifier:get_notification(10,  "ScreenDpmsBattery")
+DbusHandler:PrepareSleep("LockScreen")
+DbusHandler:LockHandler("LockScreen")
+DbusHandler:UnlockHandler("LockScreen")
+IdleNotifier:get_notification(300,  "ScreenLockBattery")
+IdleNotifier:get_notification(30,  "ScreenDpmsBattery")
 IdleNotifier:get_notification(300,  "ScreenLockAC")
-IdleNotifier:get_notification(1200,  "ScreenDpmsAC")
+IdleNotifier:get_notification(600,  "ScreenDpmsAC")
 
-IdleNotifier:log("Finished loading idle_config.lua")
+Helpers:log("Finished loading idle_config.lua")
