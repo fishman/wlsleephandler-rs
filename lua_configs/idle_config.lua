@@ -29,7 +29,7 @@ function ScreenLockBattery(event)
     return
   end
   if event == "idled" then
-    HybridSleep()
+    LockScreen()
   end
 end
 
@@ -38,7 +38,7 @@ function SleepBattery(event)
     return
   end
   if event == "idled" then
-    LockScreen()
+    HybridSleep()
   end
 end
 
