@@ -17,3 +17,4 @@ This is intended as a replacement of sway's idle management daemon. I use it as 
 - [ ] duplicate state information
 - [ ] find a way to remove the std::thread::spawn that used within the lua thread to run_once
 - [ ] add idle hints
+- [ ] improve return and error handling

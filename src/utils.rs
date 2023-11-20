@@ -24,24 +24,36 @@ pub fn xdg_config_path(filename: Option<String>) -> std::io::Result<PathBuf> {
     }
 }
 
-pub async fn run_once(cmd: String) -> anyhow::Result<(), Box<dyn std::error::Error>> {
-    let s = System::new_all();
+pub async fn run(cmd: String) -> anyhow::Result<(), Box<dyn std::error::Error>> {
+    //TODO: get_args executed twice
     let (cmd, args) = get_args(cmd);
 
+    let mut child = Command::new(&cmd)
+        .args(args)
+        .spawn()
+        .expect(&format!("Failed to spawn {} process", cmd));
+
+    // Wait for the process to complete to avoid a defunct process
+    let _ = child
+        .wait()
+        .await
+        .expect(&format!("{} process failed to run", cmd));
+
+    Ok(())
+}
+
+pub async fn run_once(cmd: String) -> anyhow::Result<(), Box<dyn std::error::Error>> {
+    let s = System::new_all();
+    //TODO: get_args executed twice
+    let (cmd_name, _) = get_args(cmd.clone());
+
     // Check if the process is already running
-    let is_running = s.processes_by_exact_name(&cmd).any(|p| p.name() == cmd);
+    let is_running = s
+        .processes_by_exact_name(&cmd_name)
+        .any(|p| p.name() == cmd_name);
 
     if !is_running {
-        let mut child = Command::new(&cmd)
-            .args(args)
-            .spawn()
-            .expect(&format!("Failed to spawn {} process", cmd));
-
-        // Wait for the process to complete to avoid a defunct process
-        let _ = child
-            .wait()
-            .await
-            .expect(&format!("{} process failed to run", cmd));
+        let _ = run(cmd.clone()).await;
     }
     Ok(())
 }

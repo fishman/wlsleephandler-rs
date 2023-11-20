@@ -150,6 +150,13 @@ impl UserData for MyLuaFunctions {
                 Ok(())
             },
         );
+        methods.add_method("run", |_lua, this, command: String| {
+            let tx = this.tx.clone();
+            std::thread::spawn(move || {
+                tx.blocking_send(Request::Run(command.to_string())).unwrap();
+            });
+            Ok(())
+        });
         methods.add_method("run_once", |_lua, this, command: String| {
             let tx = this.tx.clone();
             std::thread::spawn(move || {
@@ -280,8 +287,12 @@ async fn process_command(
                     }
                 }
             }
-            Request::RunOnce(cmd) => {
+            Request::Run(cmd) => {
                 debug!("Running command: {}", cmd);
+                let _ = utils::run(cmd).await;
+            }
+            Request::RunOnce(cmd) => {
+                debug!("Running command once: {}", cmd);
                 let _ = utils::run_once(cmd).await;
             }
             Request::OnBattery(state) => {
