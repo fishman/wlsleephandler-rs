@@ -16,3 +16,4 @@ This is intended as a replacement of sway's idle management daemon. I use it as 
 - [ ] enable callbacks for lua code. it currently complains about lua functions not supporting Send. It's related to the way the user methods are implemented
 - [ ] duplicate state information
 - [ ] find a way to remove the std::thread::spawn that used within the lua thread to run_once
+- [ ] add idle hints
