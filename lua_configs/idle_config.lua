@@ -46,7 +46,7 @@ function ScreenDpmsBattery(event)
 end
 
 function ScreenLockAC(event)
-  if event == "idled" && not Helpers:on_battery() then
+  if event == "idled" and not Helpers:on_battery() then
     LockScreen()
   end
 end

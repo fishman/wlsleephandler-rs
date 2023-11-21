@@ -34,7 +34,7 @@ Important distinction between `Helpers:run` and `Helpers:run_once`. `run_once` w
 
 Originally I wanted to reload the config whenever the AC adaptor is plugged in and out, but due to the timeout issue described below, you can check for the `on_battery` state in functions.
 
-`````` lua
+``` lua
 Helpers:log("Loading idle_config.lua")
 
 function LockScreen()
@@ -52,8 +52,8 @@ DbusHandler:PrepareSleep("LockScreen")
 DbusHandler:LockHandler("LockHandler")
 DbusHandler:UnlockHandler("UnlockHandler")
 IdleNotifier:get_notification(300,  "ScreenLockBattery")
+```
 
-``````
 `get_notification` creates a Wayland idle timeout handler. It uses the `ext-idle-notify-v1` protocol. It is not (yet) possible to create callback functions, so the function calls are made by specifying the name of the function.
 
 `PrepareSleep`, `LockScreen`, `UnlockScreen`, are dbus signals from the `org.freedesktop.logind.manager` and `org.freedesktop.logind.session`.
