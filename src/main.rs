@@ -1,7 +1,7 @@
 use clap::Parser;
 use inotify::{EventMask, Inotify, WatchMask};
 use log::{debug, info};
-use mlua::{Function, Lua, UserData, UserDataMethods};
+use mlua::{AnyUserDataExt, Function, Lua, UserData, UserDataFields, UserDataMethods};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
@@ -115,6 +115,10 @@ type LuaHandle = Arc<Mutex<Lua>>;
 impl UserData for LuaHelpers {
     fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
         methods.add_method("on_battery", |_lua, this, (): ()| Ok(this.on_battery));
+        methods.add_method_mut("set_on_battery", |_lua, this, value: bool| {
+            this.on_battery = value;
+            Ok(())
+        });
         methods.add_method("log", |_lua, _this, message: String| {
             info!("{}", message);
             Ok(())
@@ -298,7 +302,14 @@ async fn process_command(
             Request::OnBattery(state) => {
                 let lua = lua.lock().unwrap();
                 let globals = lua.globals();
-                globals.set("Helpers", LuaHelpers { on_battery: state })?;
+                let res: mlua::Result<mlua::AnyUserData> = globals.get("Helpers");
+
+                match res {
+                    Ok(helpers) => {
+                        let _ = helpers.call_method::<_, bool>("set_on_battery", state);
+                    }
+                    Err(_e) => {}
+                }
             }
         }
     }

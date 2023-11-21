@@ -43,10 +43,7 @@ function LockScreen()
 end
 
 function ScreenLockBattery(event)
-  if Helpers:on_battery() == false then
-    return
-  end
-  if event == "idled" then
+  if event == "idled" and Helpers:on_battery() then
     LockScreen()
   end
 end

@@ -25,51 +25,37 @@ function HybridSleep()
 end
 
 function ScreenLockBattery(event)
-  if Helpers:on_battery() == false then
-    return
-  end
-  if event == "idled" then
+  if event == "idled" and Helpers:on_battery() then
     LockScreen()
   end
 end
 
 function SleepBattery(event)
-  if Helpers:on_battery() == false then
-    return
-  end
-  if event == "idled" then
+  if event == "idled" and Helpers:on_battery() then
     HybridSleep()
   end
 end
 
 function ScreenDpmsBattery(event)
-  if Helpers:on_battery() == false then
-    return
-  end
-  if event == "idled" then
-    DpmsOff()
-  elseif event == "resumed" then
+  -- Resumed should always be executed
+  if event == "resumed" then
     DpmsOn()
+  elseif event == "idled" and Helpers:on_battery() then
+    DpmsOff()
   end
 end
 
 function ScreenLockAC(event)
-  if Helpers:on_battery() == true then
-    return
-  end
-  if event == "idled" then
+  if event == "idled" && not Helpers:on_battery() then
     LockScreen()
   end
 end
 
 function ScreenDpmsAC(event)
-  if Helpers:on_battery() == true then
-    return
-  end
-  if event == "idled" then
-    DpmsOff()
-  elseif event == "resumed" then
+  if event == "resumed" then
     DpmsOn()
+  elseif event == "idled" and not Helpers:on_battery() then
+    DpmsOff()
   end
 end
 
