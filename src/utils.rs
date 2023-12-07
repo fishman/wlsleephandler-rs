@@ -1,3 +1,4 @@
+use log::info;
 use std::path::PathBuf;
 use sysinfo::{ProcessExt, System, SystemExt};
 use tokio::process::Command;
@@ -25,6 +26,7 @@ pub fn xdg_config_path(filename: Option<String>) -> std::io::Result<PathBuf> {
 }
 
 pub async fn run(cmd: String) -> anyhow::Result<(), Box<dyn std::error::Error>> {
+    info!("cmd: {}", cmd);
     //TODO: get_args executed twice
     let (cmd, args) = get_args(cmd);
 

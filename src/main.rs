@@ -1,7 +1,9 @@
 use clap::Parser;
+use env_logger::{Builder, Env};
 use inotify::{EventMask, Inotify, WatchMask};
-use log::{debug, info};
+use log::{debug, error, info};
 use mlua::{AnyUserDataExt, Function, Lua, UserData, UserDataFields, UserDataMethods};
+use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
@@ -318,7 +320,7 @@ async fn process_command(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    Builder::from_env(Env::default().default_filter_or("error")).init();
     let _ = ensure_config_file_exists(config::CONFIG_FILE_NAME);
     // Run the event loop in a separate async task
     let (tx, mut rx) = mpsc::channel(32);
@@ -357,12 +359,18 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn lua_load_config(lua: &Lua) -> anyhow::Result<()> {
+fn lua_load_config(lua: &Lua) -> anyhow::Result<Result<(), mlua::Error>> {
     let args = Args::parse();
 
     let config_path = utils::xdg_config_path(Some(args.config))?;
     let config = fs::read_to_string(config_path)?;
-    let result = lua.load(&config).exec()?;
+    let result = lua.load(&config).exec();
+    match result {
+        Ok(_) => {}
+        Err(ref e) => {
+            error!("Error loading config: {}", e);
+        }
+    }
 
     Ok(result)
 }
@@ -387,7 +395,7 @@ fn lua_init(state: &mut State) -> anyhow::Result<()> {
             handlers: state.dbus_handlers.clone(),
         },
     );
-    lua_load_config(&lua)?;
+    let _ = lua_load_config(&lua)?;
 
     Ok(())
 }
@@ -410,7 +418,9 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                     let wl_seat = registry.bind::<wl_seat::WlSeat, _, _>(name, 1, qh, ());
                     state.wl_seat = Some(wl_seat.clone());
                     debug!("wl_seat: {:?}", name);
-                    let _ = lua_init(state);
+                    if state.wl_seat.is_some() && state.idle_notifier.is_some() {
+                        let _ = lua_init(state);
+                    }
                 }
                 "ext_idle_notifier_v1" => {
                     let idle_notifier = registry
@@ -418,6 +428,9 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
 
                     debug!("ext_idle_notifier_v1: {:?}", name);
                     state.idle_notifier = Some(idle_notifier);
+                    if state.wl_seat.is_some() && state.idle_notifier.is_some() {
+                        let _ = lua_init(state);
+                    }
                 }
                 _ => {}
             }
