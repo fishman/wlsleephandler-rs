@@ -13,11 +13,13 @@ end
 function DpmsOn()
   Helpers:log("Turning screen on")
   IdleNotifier:run("swaymsg output '*' dpms on")
+  IdleNotifier:run("hyprctl dispatch dpms on")
 end
 
 function DpmsOff()
   Helpers:log("Turning screen off")
   IdleNotifier:run("swaymsg output '*' dpms off")
+  IdleNotifier:run("hyprctl dispatch dpms off")
 end
 
 function HybridSleep()
@@ -65,7 +67,7 @@ DbusHandler:LockHandler("LockHandler")
 IdleNotifier:get_notification(300,  "ScreenLockBattery")
 IdleNotifier:get_notification(30,  "ScreenDpmsBattery")
 IdleNotifier:get_notification(600,  "SleepBattery")
-IdleNotifier:get_notification(300,  "ScreenLockAC")
-IdleNotifier:get_notification(600,  "ScreenDpmsAC")
+IdleNotifier:get_notification(600,  "ScreenLockAC")
+IdleNotifier:get_notification(900,  "ScreenDpmsAC")
 
 Helpers:log("Finished loading idle_config.lua")
