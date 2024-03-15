@@ -3,7 +3,6 @@ use env_logger::{Builder, Env};
 use inotify::{EventMask, Inotify, WatchMask};
 use log::{debug, error, info};
 use mlua::{AnyUserDataExt, Function, Lua, UserData, UserDataFields, UserDataMethods};
-use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
