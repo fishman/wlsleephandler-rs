@@ -4,12 +4,6 @@ use env_logger::{Builder, Env};
 use inotify::{EventMask, Inotify, WatchMask};
 use log::{debug, error, info};
 use mlua::{AnyUserDataExt, Function, Lua, UserData, UserDataMethods};
-use wayland_client::globals::Global;
-//use nix::{
-//    poll::{PollFd, PollFlags},
-//    sys::timerfd::{ClockId, TimerFd, TimerFlags},
-//    unistd::{close, read},
-//};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
@@ -22,9 +16,18 @@ use uuid::Uuid;
 use wayland_client::backend::ReadEventsGuard;
 use wayland_client::protocol::{wl_output, wl_registry, wl_seat};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
-use wayland_protocols::ext::idle_notify::v1::client::{
-    ext_idle_notification_v1, ext_idle_notifier_v1,
+use wayland_protocols::{
+    ext::idle_notify::v1::client::{ext_idle_notification_v1, ext_idle_notifier_v1},
+    xdg::activation::v1::client::xdg_activation_v1,
 };
+use wayland_protocols_wlr::gamma_control::v1::client::{
+    zwlr_gamma_control_manager_v1, zwlr_gamma_control_v1,
+};
+//use nix::{
+//    poll::{PollFd, PollFlags},
+//    sys::timerfd::{ClockId, TimerFd, TimerFlags},
+//    unistd::{close, read},
+//};
 
 const JOYSTICKS_MAX: usize = 5;
 const JOYSTICKS_FD_START: usize = 3;
@@ -103,7 +106,7 @@ struct DbusHandler {
 #[derive(Debug)]
 pub struct Output {
     reg_name: u32,
-    wl: wl_output::WlOutput,
+    wl_output: wl_output::WlOutput,
     name: Option<String>,
     color: Color,
     //gamma_control: ZwlrGammaControlV1,
@@ -141,6 +144,10 @@ type CallbackListHandle = Arc<Mutex<HashMap<String, String>>>;
 type LuaHandle = Arc<Mutex<Lua>>;
 
 impl UserData for LuaHelpers {
+    // fn add_fields<'lua, F: UserDataFields<'lua, Self>>(fields: &mut F) {
+    //     fields.add_field_method_get("on_battery", |_, this| Ok(this.on_battery));
+    // }
+
     fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
         methods.add_method("on_battery", |_lua, this, (): ()| Ok(this.on_battery));
         methods.add_method_mut("set_on_battery", |_lua, this, value: bool| {
@@ -430,7 +437,7 @@ fn lua_init(state: &mut State) -> anyhow::Result<()> {
 impl Dispatch<wl_output::WlOutput, ()> for State {
     fn event(
         _state: &mut Self,
-        output: &wl_output::WlOutput,
+        _output: &wl_output::WlOutput,
         event: wl_output::Event,
         _: &(),
         _: &Connection,
@@ -500,8 +507,38 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                         let _ = lua_init(state);
                     }
                 }
+                "xdg_activation_v1" => {
+                    let _activation =
+                        registry.bind::<xdg_activation_v1::XdgActivationV1, _, _>(name, 1, qh, ());
+                    info!("xdg_activation_v1: {:?}", name);
+                }
+                "zwlr_gamma_control_v1" => {
+                    let _gamma_control = registry
+                        .bind::<zwlr_gamma_control_v1::ZwlrGammaControlV1, _, _>(name, 1, qh, ());
+                    info!("zwlr_gamma_control_v1: {:?}", name);
+                }
+                "zwlr_gamma_control_manager_v1" => {
+                    let _gamma_control_manager =
+                        registry
+                            .bind::<zwlr_gamma_control_manager_v1::ZwlrGammaControlManagerV1, _, _>(
+                                name,
+                                1,
+                                qh,
+                                (),
+                            );
+                    info!("zwlr_gamma_control_manager_v1: {:?}", name);
+                }
                 "wl_output" => {
                     let wl_output = registry.bind::<wl_output::WlOutput, _, _>(name, 1, qh, ());
+                    let output = Output {
+                        reg_name: name,
+                        wl_output,
+                        name: None,
+                        color: Color::default(),
+                        ramp_size: 0,
+                        color_changed: false,
+                    };
+                    state.outputs.insert(name, output);
                     info!("wl_output: {:?}", name);
                 }
                 _ => {}
@@ -519,6 +556,44 @@ impl Dispatch<wl_seat::WlSeat, ()> for State {
         _: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
+    }
+}
+
+impl Dispatch<zwlr_gamma_control_v1::ZwlrGammaControlV1, ()> for State {
+    fn event(
+        _: &mut Self,
+        _: &zwlr_gamma_control_v1::ZwlrGammaControlV1,
+        _: zwlr_gamma_control_v1::Event,
+        _: &(),
+        _: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<zwlr_gamma_control_manager_v1::ZwlrGammaControlManagerV1, ()> for State {
+    fn event(
+        _: &mut Self,
+        manager: &zwlr_gamma_control_manager_v1::ZwlrGammaControlManagerV1,
+        _event: zwlr_gamma_control_manager_v1::Event,
+        _: &(),
+        _: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        info!("Gamma Control: {:?}", manager);
+    }
+}
+
+impl Dispatch<xdg_activation_v1::XdgActivationV1, ()> for State {
+    fn event(
+        _: &mut Self,
+        _: &xdg_activation_v1::XdgActivationV1,
+        _: xdg_activation_v1::Event,
+        _: &(),
+        _: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        info!("XdgActivation event");
     }
 }
 

@@ -24,7 +24,8 @@ tokio-timer = "0.2.13"
 tokio-udev = "0.9.1"
 udev = "0.9.0"
 uuid = { version = "1.5.0", features = ["fast-rng", "v4"] }
-wayland-client = "0.31.1"
-wayland-protocols = { version = "0.31.0", features = ["client", "staging"] }
+wayland-client = { version = "0.31.6", features = ["log"] }
+wayland-protocols = { version = "0.32.4", features = ["client", "staging", "unstable"] }
+wayland-protocols-wlr = { version = "0.3.4", features = ["client"] }
 xdg = "2.5.2"
 zbus = { version = "3.14.1", features = ["tokio"] }
