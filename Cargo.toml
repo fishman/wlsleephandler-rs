@@ -19,7 +19,7 @@ once_cell = "1.18.0"
 parking_lot = "0.12.1"
 shmemfdrs2 = "1.0.0"
 sysinfo = "0.29.10"
-tokio = { version = "1.32.0", features = ["rt", "macros", "process", "rt-multi-thread"] }
+tokio = { version = "1.32.0", features = ["rt", "macros", "process", "rt-multi-thread", "mio", "signal"] }
 tokio-timer = "0.2.13"
 tokio-udev = "0.9.1"
 udev = "0.9.0"

@@ -11,7 +11,7 @@ use std::{
     path::Path,
     sync::{Arc, Mutex},
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex as TokioMutex};
 use uuid::Uuid;
 use wayland_client::backend::ReadEventsGuard;
 use wayland_client::protocol::{wl_output, wl_registry, wl_seat};
@@ -24,24 +24,16 @@ use wayland_protocols::{
 use wayland_protocols_wlr::gamma_control::v1::client::{
     zwlr_gamma_control_manager_v1, zwlr_gamma_control_v1,
 };
-//use nix::{
-//    poll::{PollFd, PollFlags},
-//    sys::timerfd::{ClockId, TimerFd, TimerFlags},
-//    unistd::{close, read},
-//};
-
-const JOYSTICKS_MAX: usize = 5;
-const JOYSTICKS_FD_START: usize = 3;
-const FDS_MAX: usize = JOYSTICKS_FD_START + JOYSTICKS_MAX;
 
 mod color;
 mod config;
 mod dbus;
 mod types;
 mod utils;
-//mod wljoywake;
+mod wljoywake;
 
 use types::Request;
+use wljoywake::JoystickHandler;
 
 const CONFIG_FILE: &str = include_str!("../lua_configs/idle_config.lua");
 
@@ -92,6 +84,7 @@ struct MyLuaFunctions {
     idle_notifier: Option<ext_idle_notifier_v1::ExtIdleNotifierV1>,
     tx: mpsc::Sender<Request>,
     notification_list: NotificationListHandle,
+    //gamma_control: Option<zwlr_gamma_control_v1::ZwlrGammaControlV1>,
 }
 
 #[derive(Clone, Debug)]
@@ -110,7 +103,6 @@ pub struct Output {
     wl_output: wl_output::WlOutput,
     name: Option<String>,
     color: Color,
-    //gamma_control: ZwlrGammaControlV1,
     ramp_size: usize,
     color_changed: bool,
 }
@@ -367,6 +359,9 @@ async fn main() -> anyhow::Result<()> {
     let shared_map = Arc::new(Mutex::new(map));
     let lua = Arc::new(Mutex::new(Lua::new()));
     let dbus_handlers = Arc::new(Mutex::new(HashMap::new()));
+    let joystick_handler = Arc::new(TokioMutex::new(JoystickHandler::new()));
+    let _ = tokio::spawn(JoystickHandler::run(joystick_handler.clone())).await;
+    //let _ = tokio::spawn(JoystickHandler::udev_handler_run(joystick_handler.clone())).await;
 
     let config_path = utils::xdg_config_path(None)?;
     let _task = filewatcher_run(&config_path, tx.clone())
