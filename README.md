@@ -1,4 +1,4 @@
-# swayidle-rs
+# wlsleephandler-rs - Wayland SleepHandler
 
 This is intended as a replacement of sway's idle management daemon. I use it as a tool to understand rust message passing and state management. It aims to have the following goals:
 
