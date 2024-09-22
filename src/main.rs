@@ -317,7 +317,9 @@ async fn process_command(
                         let fn_name = fn_name.clone();
                         let result: Result<Function, _> = globals.get(fn_name.clone());
                         if let Ok(lua_func) = result {
-                            let _ = lua_func.call(())?;
+                            let lua_result: i32 =
+                                lua_func.call(()).map_err(|e| anyhow::Error::new(e))?;
+                            let _result: Result<i32, anyhow::Error> = Ok(lua_result);
                         } else {
                             debug!("Lua function not found: {}", fn_name);
                         }
