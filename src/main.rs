@@ -1,26 +1,41 @@
 use clap::Parser;
+use color::{colorramp_fill, Color};
 use env_logger::{Builder, Env};
 use inotify::{EventMask, Inotify, WatchMask};
 use log::{debug, error, info};
-use mlua::{AnyUserDataExt, Function, Lua, UserData, UserDataFields, UserDataMethods};
+use mlua::{AnyUserDataExt, Function, Lua, UserData, UserDataMethods};
+use wayland_client::globals::Global;
+//use nix::{
+//    poll::{PollFd, PollFlags},
+//    sys::timerfd::{ClockId, TimerFd, TimerFlags},
+//    unistd::{close, read},
+//};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
-use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use wayland_client::backend::ReadEventsGuard;
-use wayland_client::protocol::{wl_registry, wl_seat};
+use wayland_client::protocol::{wl_output, wl_registry, wl_seat};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
 use wayland_protocols::ext::idle_notify::v1::client::{
     ext_idle_notification_v1, ext_idle_notifier_v1,
 };
 
+const JOYSTICKS_MAX: usize = 5;
+const JOYSTICKS_FD_START: usize = 3;
+const FDS_MAX: usize = JOYSTICKS_FD_START + JOYSTICKS_MAX;
+
+mod color;
 mod config;
 mod dbus;
 mod types;
 mod utils;
+//mod wljoywake;
 
 use types::Request;
 
@@ -59,6 +74,7 @@ struct State {
     dbus_handlers: CallbackListHandle,
     tx: mpsc::Sender<Request>,
     lua: LuaHandle,
+    outputs: HashMap<u32, Output>,
 }
 
 #[derive(Clone, Debug)]
@@ -82,6 +98,17 @@ struct LuaHelpers {
 #[derive(Clone, Debug)]
 struct DbusHandler {
     handlers: CallbackListHandle,
+}
+
+#[derive(Debug)]
+pub struct Output {
+    reg_name: u32,
+    wl: wl_output::WlOutput,
+    name: Option<String>,
+    color: Color,
+    //gamma_control: ZwlrGammaControlV1,
+    ramp_size: usize,
+    color_changed: bool,
 }
 
 impl UserData for DbusHandler {
@@ -198,6 +225,7 @@ pub async fn wayland_run(
         dbus_handlers: dbus_handlers.clone(),
         tx: tx.clone(),
         lua,
+        outputs: HashMap::new(),
     };
 
     let _ = tokio::task::spawn_blocking(move || loop {
@@ -319,7 +347,7 @@ async fn process_command(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    Builder::from_env(Env::default().default_filter_or("error")).init();
+    Builder::from_env(Env::default().default_filter_or("info")).init();
     let _ = ensure_config_file_exists(config::CONFIG_FILE_NAME);
     // Run the event loop in a separate async task
     let (tx, mut rx) = mpsc::channel(32);
@@ -399,6 +427,47 @@ fn lua_init(state: &mut State) -> anyhow::Result<()> {
     Ok(())
 }
 
+impl Dispatch<wl_output::WlOutput, ()> for State {
+    fn event(
+        _state: &mut Self,
+        output: &wl_output::WlOutput,
+        event: wl_output::Event,
+        _: &(),
+        _: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_output::Event::Geometry {
+                x,
+                y,
+                physical_width,
+                physical_height,
+                subpixel,
+                make,
+                model,
+                transform,
+            } => {
+                info!(
+                    "Output geometry: x: {}, y: {}, physical_width: {}, physical_height: {}, subpixel: {:?}, make: {}, model: {}, transform: {:?}",
+                    x, y, physical_width, physical_height, subpixel, make, model, transform
+                );
+            }
+            //wl_output::Event::Mode {
+            //    flags: _,
+            //    width,
+            //    height,
+            //    refresh,
+            //} => {
+            //    info!(
+            //        "Output mode: width: {}, height: {}, refresh: {}",
+            //        width, height, refresh
+            //    );
+            //}
+            _ => {}
+        }
+    }
+}
+
 impl Dispatch<wl_registry::WlRegistry, ()> for State {
     fn event(
         state: &mut Self,
@@ -430,6 +499,10 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                     if state.wl_seat.is_some() && state.idle_notifier.is_some() {
                         let _ = lua_init(state);
                     }
+                }
+                "wl_output" => {
+                    let wl_output = registry.bind::<wl_output::WlOutput, _, _>(name, 1, qh, ());
+                    info!("wl_output: {:?}", name);
                 }
                 _ => {}
             }
