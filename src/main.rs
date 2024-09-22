@@ -16,9 +16,10 @@ use uuid::Uuid;
 use wayland_client::backend::ReadEventsGuard;
 use wayland_client::protocol::{wl_output, wl_registry, wl_seat};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
+use wayland_protocols::wp::idle_inhibit::zv1::client::zwp_idle_inhibitor_v1;
 use wayland_protocols::{
     ext::idle_notify::v1::client::{ext_idle_notification_v1, ext_idle_notifier_v1},
-    xdg::activation::v1::client::xdg_activation_v1,
+    xdg::activation::v1::client::{xdg_activation_token_v1, xdg_activation_v1},
 };
 use wayland_protocols_wlr::gamma_control::v1::client::{
     zwlr_gamma_control_manager_v1, zwlr_gamma_control_v1,
@@ -461,17 +462,6 @@ impl Dispatch<wl_output::WlOutput, ()> for State {
                     x, y, physical_width, physical_height, subpixel, make, model, transform
                 );
             }
-            //wl_output::Event::Mode {
-            //    flags: _,
-            //    width,
-            //    height,
-            //    refresh,
-            //} => {
-            //    info!(
-            //        "Output mode: width: {}, height: {}, refresh: {}",
-            //        width, height, refresh
-            //    );
-            //}
             _ => {}
         }
     }
@@ -514,10 +504,27 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                         registry.bind::<xdg_activation_v1::XdgActivationV1, _, _>(name, 1, qh, ());
                     info!("xdg_activation_v1: {:?}", name);
                 }
+                "xdg_activation_token_v1" => {
+                    let _activation = registry
+                        .bind::<xdg_activation_token_v1::XdgActivationTokenV1, _, _>(
+                            name,
+                            1,
+                            qh,
+                            (),
+                        );
+                    info!("xdg_activation_token_v1: {:?}", name);
+                }
+                // Idle inhibitor is used to handle sleep events for joystick input
+                "zwp_idle_inhibitor_v1" => {
+                    let _inhibitor = registry
+                        .bind::<zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1, _, _>(name, 1, qh, ());
+                    info!("zwp_idle_inhibitor_v1: {:?}", name);
+                }
                 "zwlr_gamma_control_v1" => {
-                    let _gamma_control = registry
+                    let gamma_control = registry
                         .bind::<zwlr_gamma_control_v1::ZwlrGammaControlV1, _, _>(name, 1, qh, ());
                     info!("zwlr_gamma_control_v1: {:?}", name);
+                    //state.gamma_control = Some(_gamma_control);
                 }
                 "zwlr_gamma_control_manager_v1" => {
                     let _gamma_control_manager =
@@ -561,15 +568,29 @@ impl Dispatch<wl_seat::WlSeat, ()> for State {
     }
 }
 
-impl Dispatch<zwlr_gamma_control_v1::ZwlrGammaControlV1, ()> for State {
+impl Dispatch<zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1, ()> for State {
     fn event(
         _: &mut Self,
-        _: &zwlr_gamma_control_v1::ZwlrGammaControlV1,
-        _: zwlr_gamma_control_v1::Event,
+        _: &zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1,
+        _event: zwp_idle_inhibitor_v1::Event,
         _: &(),
         _: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
+        info!("Idle inhibitor event: {:?}", _event)
+    }
+}
+
+impl Dispatch<zwlr_gamma_control_v1::ZwlrGammaControlV1, ()> for State {
+    fn event(
+        _: &mut Self,
+        _: &zwlr_gamma_control_v1::ZwlrGammaControlV1,
+        _event: zwlr_gamma_control_v1::Event,
+        _: &(),
+        _: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        info!("Gamma Control: {:?}", _event);
     }
 }
 
@@ -582,7 +603,7 @@ impl Dispatch<zwlr_gamma_control_manager_v1::ZwlrGammaControlManagerV1, ()> for 
         _: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        info!("Gamma Control: {:?}", manager);
+        info!("Gamma Control: {:?} {:?}", manager, _event);
     }
 }
 
@@ -599,6 +620,18 @@ impl Dispatch<xdg_activation_v1::XdgActivationV1, ()> for State {
     }
 }
 
+impl Dispatch<xdg_activation_token_v1::XdgActivationTokenV1, ()> for State {
+    fn event(
+        _: &mut Self,
+        _: &xdg_activation_token_v1::XdgActivationTokenV1,
+        _: xdg_activation_token_v1::Event,
+        _: &(),
+        _: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        info!("XdgActivation event");
+    }
+}
 impl Dispatch<ext_idle_notifier_v1::ExtIdleNotifierV1, ()> for State {
     fn event(
         _state: &mut Self,
