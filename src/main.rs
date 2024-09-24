@@ -33,7 +33,7 @@ mod utils;
 mod wljoywake;
 
 use types::Request;
-use wljoywake::JoystickHandler;
+//use wljoywake::JoystickHandler;
 
 const CONFIG_FILE: &str = include_str!("../lua_configs/idle_config.lua");
 
@@ -357,8 +357,8 @@ async fn main() -> anyhow::Result<()> {
     let shared_map = Arc::new(Mutex::new(map));
     let lua = Arc::new(Mutex::new(Lua::new()));
     let dbus_handlers = Arc::new(Mutex::new(HashMap::new()));
-    let joystick_handler = Arc::new(TokioMutex::new(JoystickHandler::new()));
-    let _ = tokio::spawn(JoystickHandler::run(joystick_handler.clone())).await;
+    //let joystick_handler = Arc::new(TokioMutex::new(JoystickHandler::new()));
+    //let _ = tokio::spawn(JoystickHandler::run(joystick_handler.clone())).await;
     //let _ = tokio::spawn(JoystickHandler::udev_handler_run(joystick_handler.clone())).await;
 
     let config_path = utils::xdg_config_path(None)?;
