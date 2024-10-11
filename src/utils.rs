@@ -1,12 +1,13 @@
+use futures::lock::Mutex;
 use log::info;
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 use sysinfo::{ProcessExt, System, SystemExt};
-use tokio::process::Command;
+use tokio::{process::Command, task::JoinHandle};
 use xdg::BaseDirectories;
 
 use super::config;
 
-fn get_args(cmd: String) -> (String, Vec<String>) {
+pub fn get_args(cmd: String) -> (String, Vec<String>) {
     let mut args = cmd.split_whitespace();
     let cmd = args.next().unwrap().to_string();
     let args: Vec<String> = args.map(|s| s.to_string()).collect();
@@ -25,37 +26,60 @@ pub fn xdg_config_path(filename: Option<String>) -> std::io::Result<PathBuf> {
     }
 }
 
-pub async fn run(cmd: String) -> anyhow::Result<(), Box<dyn std::error::Error>> {
-    info!("cmd: {}", cmd);
-    //TODO: get_args executed twice
-    let (cmd, args) = get_args(cmd);
-
-    let mut child = Command::new(&cmd)
-        .args(args)
-        .spawn()
-        .expect(&format!("Failed to spawn {} process", cmd));
-
-    // Wait for the process to complete to avoid a defunct process
-    let _ = child
-        .wait()
-        .await
-        .expect(&format!("{} process failed to run", cmd));
-
-    Ok(())
+#[derive(Debug)]
+pub struct Runner {
+    tasks: Mutex<HashMap<String, JoinHandle<anyhow::Result<()>>>>,
 }
 
-pub async fn run_once(cmd: String) -> anyhow::Result<(), Box<dyn std::error::Error>> {
-    let s = System::new_all();
-    //TODO: get_args executed twice
-    let (cmd_name, _) = get_args(cmd.clone());
-
-    // Check if the process is already running
-    let is_running = s
-        .processes_by_exact_name(&cmd_name)
-        .any(|p| p.name() == cmd_name);
-
-    if !is_running {
-        let _ = run(cmd.clone()).await;
+impl Runner {
+    pub fn new() -> Self {
+        Self {
+            tasks: Mutex::new(HashMap::new()),
+        }
     }
-    Ok(())
+
+    pub async fn run(&self, cmd: String) -> JoinHandle<Result<(), anyhow::Error>> {
+        info!("cmd: {}", cmd);
+        //TODO: get_args executed twice
+        let (cmd, args) = get_args(cmd);
+
+        tokio::spawn(async move {
+            let mut child = Command::new(&cmd).args(args).spawn().map_err(|e| {
+                anyhow::Error::msg(format!("Failed to spawn {} process: {}", cmd, e))
+            })?;
+
+            let status = child
+                .wait()
+                .await
+                .map_err(|e| anyhow::Error::msg(format!("{} process failed to run: {}", cmd, e)))?;
+
+            //{
+            //    let mut tasks = self.tasks.lock().await;
+            //    tasks.remove(&cmd);
+            //}
+            info!("Command {} completed with status: {:?}", cmd, status);
+
+            Ok(())
+        })
+    }
+
+    pub async fn run_once(&self, cmd: String) -> anyhow::Result<(), Box<dyn std::error::Error>> {
+        let s = System::new_all();
+        //TODO: get_args executed twice
+        let (cmd_name, _) = get_args(cmd.clone());
+
+        // Check if the process is already running
+        let is_running = s
+            .processes_by_exact_name(&cmd_name)
+            .any(|p| p.name() == cmd_name);
+
+        if !is_running {
+            let mut tasks = self.tasks.lock().await;
+            //if !tasks.contains_key(&cmd) {
+            let _handle = self.run(cmd.clone()).await;
+            //tasks.insert(cmd_name, handle);
+            //}
+        }
+        Ok(())
+    }
 }

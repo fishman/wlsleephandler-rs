@@ -1,5 +1,5 @@
 use clap::Parser;
-use color::{colorramp_fill, Color};
+use color::Color;
 use env_logger::{Builder, Env};
 use inotify::{EventMask, Inotify, WatchMask};
 use log::{debug, error, info};
@@ -11,7 +11,8 @@ use std::{
     path::Path,
     sync::{Arc, Mutex},
 };
-use tokio::sync::{mpsc, Mutex as TokioMutex};
+use tokio::sync::mpsc;
+use utils::Runner;
 use uuid::Uuid;
 use wayland_client::backend::ReadEventsGuard;
 use wayland_client::protocol::{wl_output, wl_registry, wl_seat};
@@ -30,7 +31,7 @@ mod config;
 mod dbus;
 mod types;
 mod utils;
-mod wljoywake;
+//mod wljoywake;
 
 use types::Request;
 //use wljoywake::JoystickHandler;
@@ -283,6 +284,7 @@ async fn process_command(
     rx: &mut mpsc::Receiver<Request>,
     shared_map: NotificationListHandle,
     dbus_handlers: CallbackListHandle,
+    runner: &Runner,
 ) -> anyhow::Result<()> {
     while let Some(event) = rx.recv().await {
         match event {
@@ -322,11 +324,11 @@ async fn process_command(
             }
             Request::Run(cmd) => {
                 debug!("Running command: {}", cmd);
-                let _ = utils::run(cmd).await;
+                let _ = runner.run(cmd).await;
             }
             Request::RunOnce(cmd) => {
                 debug!("Running command once: {}", cmd);
-                let _ = utils::run_once(cmd).await;
+                let _ = runner.run_once(cmd).await;
             }
             Request::OnBattery(state) => {
                 let lua = lua.lock().unwrap();
@@ -357,6 +359,7 @@ async fn main() -> anyhow::Result<()> {
     let shared_map = Arc::new(Mutex::new(map));
     let lua = Arc::new(Mutex::new(Lua::new()));
     let dbus_handlers = Arc::new(Mutex::new(HashMap::new()));
+    let runner = Runner::new();
     //let joystick_handler = Arc::new(TokioMutex::new(JoystickHandler::new()));
     //let _ = tokio::spawn(JoystickHandler::run(joystick_handler.clone())).await;
     //let _ = tokio::spawn(JoystickHandler::udev_handler_run(joystick_handler.clone())).await;
@@ -380,7 +383,8 @@ async fn main() -> anyhow::Result<()> {
             tx,
             &mut rx,
             shared_map.clone(),
-            dbus_handlers.clone()
+            dbus_handlers.clone(),
+            &runner
         ),
     )?;
     // .await
