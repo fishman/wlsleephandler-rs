@@ -122,7 +122,7 @@ impl UserData for DbusHandler {
             Ok(())
         });
         methods.add_method("UnlockHandler", |_lua, this, fn_name: String| {
-            debug!("UnlcokHandler callback");
+            debug!("UnlockHandler callback");
             let mut map = this.handlers.lock().unwrap();
             map.insert("UnlockHandler".to_string(), fn_name);
             Ok(())
