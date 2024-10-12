@@ -4,22 +4,26 @@ use env_logger::{Builder, Env};
 use inotify::{EventMask, Inotify, WatchMask};
 use log::{debug, error, info};
 use mlua::{AnyUserDataExt, Function, Lua, UserData, UserDataMethods};
-use std::collections::HashMap;
-use std::fs::{self, File};
-use std::io::Write;
 use std::{
+    collections::HashMap,
+    env,
+    fs::{self, File},
+    io::Write,
     path::Path,
+    process::Stdio,
     sync::{Arc, Mutex},
 };
-use tokio::sync::mpsc;
-use utils::Runner;
+use sysinfo::{ProcessExt, System, SystemExt};
+use tokio::{process::Command, sync::mpsc, task::JoinHandle};
 use uuid::Uuid;
-use wayland_client::backend::ReadEventsGuard;
-use wayland_client::protocol::{wl_output, wl_registry, wl_seat};
-use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
-use wayland_protocols::wp::idle_inhibit::zv1::client::zwp_idle_inhibitor_v1;
+use wayland_client::{
+    backend::ReadEventsGuard,
+    protocol::{wl_output, wl_registry, wl_seat},
+    Connection, Dispatch, EventQueue, QueueHandle,
+};
 use wayland_protocols::{
     ext::idle_notify::v1::client::{ext_idle_notification_v1, ext_idle_notifier_v1},
+    wp::idle_inhibit::zv1::client::zwp_idle_inhibitor_v1,
     xdg::activation::v1::client::{xdg_activation_token_v1, xdg_activation_v1},
 };
 use wayland_protocols_wlr::gamma_control::v1::client::{
@@ -85,6 +89,7 @@ struct MyLuaFunctions {
     idle_notifier: Option<ext_idle_notifier_v1::ExtIdleNotifierV1>,
     tx: mpsc::Sender<Request>,
     notification_list: NotificationListHandle,
+    tasks: Mutex<HashMap<String, JoinHandle<anyhow::Result<()>>>>,
     //gamma_control: Option<zwlr_gamma_control_v1::ZwlrGammaControlV1>,
 }
 
@@ -183,19 +188,69 @@ impl UserData for MyLuaFunctions {
                 Ok(())
             },
         );
-        methods.add_method("run", |_lua, this, command: String| {
-            let tx = this.tx.clone();
-            std::thread::spawn(move || {
-                tx.blocking_send(Request::Run(command.to_string())).unwrap();
-            });
+
+        async fn run(cmd: String) -> JoinHandle<Result<(), anyhow::Error>> {
+            let (cmd, args) = utils::get_args(cmd.clone());
+
+            tokio::spawn(async move {
+                match Command::new(&cmd)
+                    .env(
+                        "WAYLAND_DISPLAY",
+                        env::var("WAYLAND_DISPLAY").unwrap_or_default(),
+                    )
+                    .env(
+                        "DBUS_SESSION_BUS_ADDRESS",
+                        env::var("DBUS_SESSION_BUS_ADDRESS").unwrap_or_default(),
+                    )
+                    .stdout(Stdio::inherit())
+                    .stderr(Stdio::inherit())
+                    .args(args)
+                    .spawn()
+                {
+                    Ok(mut child) => match child.wait().await {
+                        Ok(status) => {
+                            info!("Command {} completed with status: {:?}", cmd, status);
+                            Ok(())
+                        }
+                        Err(e) => {
+                            error!("{} process failed to run: {}", cmd, e);
+                            Err(anyhow::Error::msg(format!("Failed to run command: {}", e)))
+                        }
+                    },
+                    Err(e) => {
+                        error!("Failed to spawn {} process: {}", cmd, e);
+                        Err(anyhow::Error::msg(format!(
+                            "Failed to spawn process: {}",
+                            e
+                        )))
+                    }
+                }
+            })
+        }
+
+        methods.add_async_method("run", |_lua, _this, command: String| async move {
+            debug!("run function called {}", command.clone());
+            let _handle = run(command);
             Ok(())
         });
-        methods.add_method("run_once", |_lua, this, command: String| {
-            let tx = this.tx.clone();
-            std::thread::spawn(move || {
-                tx.blocking_send(Request::RunOnce(command.to_string()))
-                    .unwrap();
-            });
+
+        methods.add_async_method("run_once", |_lua, _this, command: String| async move {
+            debug!("run_once function called {}", command.clone());
+            let s = System::new_all();
+            let (cmd_name, _) = utils::get_args(command.clone());
+
+            // Check if the process is already running
+            let is_running = s
+                .processes_by_exact_name(&cmd_name)
+                .any(|p| p.name() == cmd_name);
+
+            if !is_running {
+                //let mut tasks = this.tasks.lock();
+                //if !tasks.contains_key(&cmd) {
+                let _handle = run(command.clone()).await;
+                //tasks.insert(cmd_name, handle);
+                //}
+            }
             Ok(())
         });
     }
@@ -259,7 +314,7 @@ pub async fn filewatcher_run(config_path: &Path, tx: mpsc::Sender<Request>) -> a
 
     let mut buffer = [0; 1024];
 
-    let _ = tokio::task::spawn_blocking(move || loop {
+    let _spawn_blocking = tokio::task::spawn_blocking(move || loop {
         let events = inotify
             .read_events_blocking(&mut buffer)
             .expect("Failed to read inotify events");
@@ -267,11 +322,9 @@ pub async fn filewatcher_run(config_path: &Path, tx: mpsc::Sender<Request>) -> a
         debug!("Received events");
         for event in events {
             debug!("File modified: {:?}", event.name);
-            if event.mask.contains(EventMask::MODIFY) {
-                if !event.mask.contains(EventMask::ISDIR) {
-                    debug!("File modified: {:?}", event.name);
-                    tx.blocking_send(Request::Reset).unwrap();
-                }
+            if event.mask.contains(EventMask::MODIFY) && !event.mask.contains(EventMask::ISDIR) {
+                debug!("File modified: {:?}", event.name);
+                tx.blocking_send(Request::Reset).unwrap();
             }
         }
     });
@@ -284,7 +337,6 @@ async fn process_command(
     rx: &mut mpsc::Receiver<Request>,
     shared_map: NotificationListHandle,
     dbus_handlers: CallbackListHandle,
-    runner: &Runner,
 ) -> anyhow::Result<()> {
     while let Some(event) = rx.recv().await {
         match event {
@@ -322,14 +374,6 @@ async fn process_command(
                     }
                 }
             }
-            Request::Run(cmd) => {
-                debug!("Running command: {}", cmd);
-                let _ = runner.run(cmd).await;
-            }
-            Request::RunOnce(cmd) => {
-                debug!("Running command once: {}", cmd);
-                let _ = runner.run_once(cmd).await;
-            }
             Request::OnBattery(state) => {
                 let lua = lua.lock().unwrap();
                 let globals = lua.globals();
@@ -359,7 +403,6 @@ async fn main() -> anyhow::Result<()> {
     let shared_map = Arc::new(Mutex::new(map));
     let lua = Arc::new(Mutex::new(Lua::new()));
     let dbus_handlers = Arc::new(Mutex::new(HashMap::new()));
-    let runner = Runner::new();
     //let joystick_handler = Arc::new(TokioMutex::new(JoystickHandler::new()));
     //let _ = tokio::spawn(JoystickHandler::run(joystick_handler.clone())).await;
     //let _ = tokio::spawn(JoystickHandler::udev_handler_run(joystick_handler.clone())).await;
@@ -384,7 +427,6 @@ async fn main() -> anyhow::Result<()> {
             &mut rx,
             shared_map.clone(),
             dbus_handlers.clone(),
-            &runner
         ),
     )?;
     // .await
@@ -418,6 +460,7 @@ fn lua_init(state: &mut State) -> anyhow::Result<()> {
         qh: state.qh.clone(),
         notification_list: state.notification_list.clone(),
         tx: state.tx.clone(),
+        tasks: Mutex::new(HashMap::new()),
     };
 
     let globals = lua.globals();
