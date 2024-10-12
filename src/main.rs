@@ -284,13 +284,13 @@ pub async fn wayland_run(
         outputs: HashMap::new(),
     };
 
-    let _ = tokio::task::spawn_blocking(move || loop {
+    let _wayland_task = tokio::task::spawn_blocking(move || loop {
         event_queue.blocking_dispatch(&mut state).unwrap();
     });
     Ok(())
 }
 
-async fn wait_for_wayland_event(
+async fn _wait_for_wayland_event(
     read_guard: ReadEventsGuard,
     event_queue: &mut EventQueue<State>,
     state: &mut State,
@@ -364,7 +364,7 @@ async fn process_command(
                         let fn_name = fn_name.clone();
                         let result: Result<Function, _> = globals.get(fn_name.clone());
                         if let Ok(lua_func) = result {
-                            let _ = lua_func.call(())?;
+                            lua_func.call(())?;
                         } else {
                             debug!("Lua function not found: {}", fn_name);
                         }
@@ -408,7 +408,7 @@ async fn main() -> anyhow::Result<()> {
     //let _ = tokio::spawn(JoystickHandler::udev_handler_run(joystick_handler.clone())).await;
 
     let config_path = utils::xdg_config_path(None)?;
-    let _task = filewatcher_run(&config_path, tx.clone())
+    filewatcher_run(&config_path, tx.clone())
         .await
         .expect("Failed to spawn task");
     let _ = wayland_run(
@@ -486,23 +486,21 @@ impl Dispatch<wl_output::WlOutput, ()> for State {
         _: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        match event {
-            wl_output::Event::Geometry {
-                x,
-                y,
-                physical_width,
-                physical_height,
-                subpixel,
-                make,
-                model,
-                transform,
-            } => {
-                info!(
-                    "Output geometry: x: {}, y: {}, physical_width: {}, physical_height: {}, subpixel: {:?}, make: {}, model: {}, transform: {:?}",
-                    x, y, physical_width, physical_height, subpixel, make, model, transform
-                );
-            }
-            _ => {}
+        if let wl_output::Event::Geometry {
+            x,
+            y,
+            physical_width,
+            physical_height,
+            subpixel,
+            make,
+            model,
+            transform,
+        } = event
+        {
+            info!(
+                "Output geometry: x: {}, y: {}, physical_width: {}, physical_height: {}, subpixel: {:?}, make: {}, model: {}, transform: {:?}",
+                x, y, physical_width, physical_height, subpixel, make, model, transform
+            );
         }
     }
 }
@@ -561,7 +559,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                     info!("zwp_idle_inhibitor_v1: {:?}", name);
                 }
                 "zwlr_gamma_control_v1" => {
-                    let gamma_control = registry
+                    let _gamma_control = registry
                         .bind::<zwlr_gamma_control_v1::ZwlrGammaControlV1, _, _>(name, 1, qh, ());
                     info!("zwlr_gamma_control_v1: {:?}", name);
                     //state.gamma_control = Some(_gamma_control);
