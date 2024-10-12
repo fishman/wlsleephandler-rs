@@ -2,21 +2,12 @@ use log::info;
 use nix::fcntl;
 use nix::sys::stat::Mode;
 use std::{
-    io::ErrorKind,
-    os::unix::{
-        io::{AsRawFd, BorrowedFd, FromRawFd, RawFd},
-        net::UnixDatagram as StdUnixDatagram,
-    },
+    os::unix::io::{BorrowedFd, RawFd},
     sync::Arc,
     time::Duration,
 };
-use tokio::{
-    net::UnixDatagram as TokioUnixDatagram,
-    signal::unix::{signal, SignalKind},
-    sync::Mutex,
-    time::sleep,
-};
-use udev::{Device, Enumerator, MonitorBuilder, MonitorSocket};
+use tokio::{sync::Mutex, time::sleep};
+use udev::Device;
 
 const JOYSTICKS_MAX: usize = 5;
 const JOYSTICKS_FD_START: usize = 3;

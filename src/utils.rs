@@ -1,6 +1,6 @@
 use futures::lock::Mutex;
 use log::info;
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, env, path::PathBuf, process::Stdio};
 use sysinfo::{ProcessExt, System, SystemExt};
 use tokio::{process::Command, task::JoinHandle};
 use xdg::BaseDirectories;
@@ -44,9 +44,22 @@ impl Runner {
         let (cmd, args) = get_args(cmd);
 
         tokio::spawn(async move {
-            let mut child = Command::new(&cmd).args(args).spawn().map_err(|e| {
-                anyhow::Error::msg(format!("Failed to spawn {} process: {}", cmd, e))
-            })?;
+            let mut child = Command::new(&cmd)
+                .env(
+                    "WAYLAND_DISPLAY",
+                    env::var("WAYLAND_DISPLAY").unwrap_or_default(),
+                )
+                .env(
+                    "DBUS_SESSION_BUS_ADDRESS",
+                    env::var("DBUS_SESSION_BUS_ADDRESS").unwrap_or_default(),
+                )
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .args(args)
+                .spawn()
+                .map_err(|e| {
+                    anyhow::Error::msg(format!("Failed to spawn {} process: {}", cmd, e))
+                })?;
 
             let status = child
                 .wait()
