@@ -230,7 +230,7 @@ impl UserData for MyLuaFunctions {
 
         methods.add_async_method("run", |_lua, _this, command: String| async move {
             debug!("run function called {}", command.clone());
-            let _handle = run(command);
+            let _handle = run(command).await;
             Ok(())
         });
 
