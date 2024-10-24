@@ -131,7 +131,7 @@ impl UdevHandler {
                 result = async_socket.readable() => {
                     let mut guard = result?;
 
-                    if let Some(event) = async_socket.get_ref().iter().next() {
+                    while let Some(event) = async_socket.get_ref().iter().next() {
                         if let Some(_sysname) = self.get_joystick_sysname(event.clone()) {
                             self.update_device(event.event_type(), event.device()).await;
                         }
