@@ -33,12 +33,13 @@ use wayland_protocols_wlr::gamma_control::v1::client::{
 mod color;
 mod config;
 mod dbus;
+mod joystick_handler;
 mod types;
+mod udev_handler;
 mod utils;
-//mod wljoywake;
 
 use types::Request;
-//use wljoywake::JoystickHandler;
+use udev_handler::UdevHandler;
 
 const CONFIG_FILE: &str = include_str!("../lua_configs/idle_config.lua");
 
@@ -391,50 +392,6 @@ async fn process_command(
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    Builder::from_env(Env::default().default_filter_or("info")).init();
-    let _ = ensure_config_file_exists(config::CONFIG_FILE_NAME);
-    // Run the event loop in a separate async task
-    let (tx, mut rx) = mpsc::channel(32);
-
-    let map: HashMap<Uuid, (String, ext_idle_notification_v1::ExtIdleNotificationV1)> =
-        HashMap::new();
-    let shared_map = Arc::new(Mutex::new(map));
-    let lua = Arc::new(Mutex::new(Lua::new()));
-    let dbus_handlers = Arc::new(Mutex::new(HashMap::new()));
-    //let joystick_handler = Arc::new(TokioMutex::new(JoystickHandler::new()));
-    //let _ = tokio::spawn(JoystickHandler::run(joystick_handler.clone())).await;
-    //let _ = tokio::spawn(JoystickHandler::udev_handler_run(joystick_handler.clone())).await;
-
-    let config_path = utils::xdg_config_path(None)?;
-    filewatcher_run(&config_path, tx.clone())
-        .await
-        .expect("Failed to spawn task");
-    let _ = wayland_run(
-        lua.clone(),
-        tx.clone(),
-        shared_map.clone(),
-        dbus_handlers.clone(),
-    )
-    .await;
-    tokio::try_join!(
-        dbus::upower_watcher(tx.clone()),
-        dbus::logind_watcher(tx.clone()),
-        process_command(
-            lua.clone(),
-            tx,
-            &mut rx,
-            shared_map.clone(),
-            dbus_handlers.clone(),
-        ),
-    )?;
-    // .await
-    // .unwrap();
-
-    Ok(())
-}
-
 fn lua_load_config(lua: &Lua) -> anyhow::Result<Result<(), mlua::Error>> {
     let args = Args::parse();
 
@@ -704,3 +661,89 @@ impl Dispatch<ext_idle_notification_v1::ExtIdleNotificationV1, NotificationConte
         });
     }
 }
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    Builder::from_env(Env::default().default_filter_or("info")).init();
+    let _ = ensure_config_file_exists(config::CONFIG_FILE_NAME);
+    // Run the event loop in a separate async task
+    let (tx, mut rx) = mpsc::channel(32);
+
+    let map: HashMap<Uuid, (String, ext_idle_notification_v1::ExtIdleNotificationV1)> =
+        HashMap::new();
+    let shared_map = Arc::new(Mutex::new(map));
+    let lua = Arc::new(Mutex::new(Lua::new()));
+    let dbus_handlers = Arc::new(Mutex::new(HashMap::new()));
+    //let joystick_handler = Arc::new(TokioMutex::new(JoystickHandler::new()));
+    //let _ = tokio::spawn(JoystickHandler::run(joystick_handler.clone())).await;
+    //let _ = tokio::spawn(JoystickHandler::udev_handler_run(joystick_handler.clone())).await;
+    let udev_handler = UdevHandler::new();
+
+    // Run the poll function in an async task
+    let config_path = utils::xdg_config_path(None)?;
+    filewatcher_run(&config_path, tx.clone())
+        .await
+        .expect("Failed to spawn task");
+    let _ = wayland_run(
+        lua.clone(),
+        tx.clone(),
+        shared_map.clone(),
+        dbus_handlers.clone(),
+    )
+    .await;
+    tokio::try_join!(
+        dbus::upower_watcher(tx.clone()),
+        dbus::logind_watcher(tx.clone()),
+        process_command(
+            lua.clone(),
+            tx,
+            &mut rx,
+            shared_map.clone(),
+            dbus_handlers.clone(),
+        ),
+        udev_handler.monitor()
+    )?;
+    // .await
+    // .unwrap();
+
+    Ok(())
+}
+
+//pub async fn run(app_state: Arc<Mutex<Self>>) {
+//    let app_state_clone = Arc::clone(&app_state);
+//    let mut sigusr1 = signal(SignalKind::user_defined1()).unwrap();
+//    let mut sigusr2 = signal(SignalKind::user_defined2()).unwrap();
+//
+//    tokio::spawn({
+//        async move {
+//            loop {
+//                let mut app_state = app_state_clone.lock().await;
+//                tokio::select! {
+//                    //_ = events[0].readable() => {
+//                    //},
+//                    _ = sigusr1.recv() => {
+//                        app_state.paused = true;
+//                    }
+//                    _ = sigusr2.recv() => {
+//                        app_state.paused = false;
+//                    }
+//                    _ = sleep(Duration::from_secs(app_state.timeout_sec)) => {
+//                        if !app_state.paused {
+//                            // Handle timeout
+//                        }
+//                    }
+//                }
+//            }
+//        }
+//    });
+//
+//    // Main event loop
+//    loop {
+//        let app_state = app_state.lock().await;
+//        for _joystick in &app_state.joysticks {
+//            // Create BorrowedFd from raw fd when needed
+//            // Read from joystick, handle events
+//            info!("handle joystick event");
+//        }
+//    }
+//}
