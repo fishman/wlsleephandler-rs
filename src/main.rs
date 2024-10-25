@@ -722,16 +722,11 @@ impl WaylandRunner {
 async fn main() -> anyhow::Result<()> {
     Builder::from_env(Env::default().default_filter_or("info")).init();
     let _ = ensure_config_file_exists(config::CONFIG_FILE_NAME);
-    // Run the event loop in a separate async task
     let (tx, mut rx) = mpsc::channel(32);
 
     let lua = Arc::new(Mutex::new(Lua::new()));
-    //let joystick_handler = Arc::new(TokioMutex::new(JoystickHandler::new()));
-    //let _ = tokio::spawn(JoystickHandler::run(joystick_handler.clone())).await;
-    //let _ = tokio::spawn(JoystickHandler::udev_handler_run(joystick_handler.clone())).await;
     let udev_handler = UdevHandler::new();
 
-    // Run the poll function in an async task
     let config_path = utils::xdg_config_path(None)?;
     filewatcher_run(&config_path, tx.clone())
         .await
@@ -747,8 +742,6 @@ async fn main() -> anyhow::Result<()> {
         wayland_runner.process_command(&mut rx),
         udev_handler.monitor()
     )?;
-    // .await
-    // .unwrap();
 
     Ok(())
 }
