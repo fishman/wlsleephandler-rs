@@ -725,7 +725,6 @@ async fn main() -> anyhow::Result<()> {
     let (tx, mut rx) = mpsc::channel(32);
 
     let lua = Arc::new(Mutex::new(Lua::new()));
-    let udev_handler = UdevHandler::new();
 
     let config_path = utils::xdg_config_path(None)?;
     filewatcher_run(&config_path, tx.clone())
@@ -733,6 +732,7 @@ async fn main() -> anyhow::Result<()> {
         .expect("Failed to spawn task");
 
     let wayland_runner = WaylandRunner::new(lua.clone(), tx.clone());
+    let udev_handler = UdevHandler::new();
 
     let _ = wayland_runner.wayland_run().await;
 
