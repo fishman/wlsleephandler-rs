@@ -4,4 +4,6 @@ pub enum Request {
     LuaMethod(String),
     Reset,
     OnBattery(bool),
+    Flush,
+    Inhibit(u32),
 }

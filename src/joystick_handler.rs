@@ -1,4 +1,5 @@
 use evdev::{Device, InputEventKind};
+use log::{debug, info};
 use std::path::Path;
 
 #[derive(Debug)]
@@ -14,6 +15,7 @@ impl JoystickHandler {
     pub async fn js_handler(&self) -> anyhow::Result<()> {
         let device_path = Path::new("/dev/input").join(&self.syspath);
         let device = Device::open(device_path)?;
+        //let absinfo = device.get_abs_state();
         let mut event_stream = device.into_event_stream()?;
 
         loop {
@@ -23,18 +25,20 @@ impl JoystickHandler {
                         Ok(ev) => {
                             match ev.kind() {
                                 InputEventKind::Key(key) => {
-                                    println!("Key event: {:?}, value: {}", key, ev.value());
+                                    info!("Key event: {:?}, value: {}", key, ev.value());
                                 }
-                                InputEventKind::AbsAxis(axis) => {
-                                    println!("Axis event: {:?}, value: {}", axis, ev.value());
+                                // Ignore axis and synchronization events for now. For Axis events
+                                // it's not currently clear how to get absinfo
+                                InputEventKind::AbsAxis(..) => {
                                 }
+                                InputEventKind::Synchronization(..) =>  {}
                                 _ => {
-                                    println!("Other event: {:?}", ev);
+                                    debug!("Other event: {:?}", ev);
                                 }
                             }
                         }
                         Err(e) => {
-                            eprintln!("Error reading event: {:?}", e);
+                            info!("Error reading event: {:?}", e);
                             break Ok(());
                         }
                     }

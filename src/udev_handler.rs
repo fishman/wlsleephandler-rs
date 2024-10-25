@@ -1,14 +1,9 @@
-use lazy_static::lazy_static;
 use log::debug;
 use std::collections::HashMap;
 use tokio::{io::unix::AsyncFd, sync::Mutex, task::JoinHandle};
 use udev::{EventType, MonitorBuilder};
 
 use crate::joystick_handler::JoystickHandler;
-
-lazy_static! {
-    static ref JOYSTICKS: Mutex<HashMap<String, JoystickHandler>> = Mutex::new(HashMap::new());
-}
 
 pub struct UdevHandler {
     paused: bool,

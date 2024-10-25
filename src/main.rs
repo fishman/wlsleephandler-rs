@@ -23,7 +23,7 @@ use wayland_client::{
 };
 use wayland_protocols::{
     ext::idle_notify::v1::client::{ext_idle_notification_v1, ext_idle_notifier_v1},
-    wp::idle_inhibit::zv1::client::zwp_idle_inhibitor_v1,
+    wp::idle_inhibit::zv1::client::{zwp_idle_inhibit_manager_v1, zwp_idle_inhibitor_v1},
     xdg::activation::v1::client::{xdg_activation_token_v1, xdg_activation_v1},
 };
 use wayland_protocols_wlr::gamma_control::v1::client::{
@@ -42,6 +42,10 @@ use types::Request;
 use udev_handler::UdevHandler;
 
 const CONFIG_FILE: &str = include_str!("../lua_configs/idle_config.lua");
+
+lazy_static::lazy_static! {
+    static ref CONNECTION: Connection = Connection::connect_to_env().unwrap();
+}
 
 fn ensure_config_file_exists(filename: &str) -> std::io::Result<()> {
     let config_path = utils::xdg_config_path(Some(filename.to_string()))?;
@@ -77,6 +81,7 @@ struct State {
     tx: mpsc::Sender<Request>,
     lua: LuaHandle,
     outputs: HashMap<u32, Output>,
+    inhibit_manager: Option<zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1>,
 }
 
 #[derive(Clone, Debug)]
@@ -267,11 +272,11 @@ pub async fn wayland_run(
     notification_list: NotificationListHandle,
     dbus_handlers: CallbackListHandle,
 ) -> anyhow::Result<(), anyhow::Error> {
-    let conn = Connection::connect_to_env().unwrap();
-    let mut event_queue: EventQueue<State> = conn.new_event_queue();
+    //let conn = Connection::connect_to_env().unwrap();
+    let mut event_queue: EventQueue<State> = CONNECTION.new_event_queue();
     let qhandle = event_queue.handle();
 
-    let display = conn.display();
+    let display = CONNECTION.display();
     display.get_registry(&qhandle, ());
 
     let mut state = State {
@@ -283,6 +288,7 @@ pub async fn wayland_run(
         tx: tx.clone(),
         lua,
         outputs: HashMap::new(),
+        inhibit_manager: None,
     };
 
     let _wayland_task = tokio::task::spawn_blocking(move || loop {
@@ -348,6 +354,7 @@ async fn process_command(
                     for (_, (_, notification)) in map.iter() {
                         notification.destroy();
                     }
+                    CONNECTION.flush().unwrap();
                 }
                 tx.send(Request::LuaReload).await.unwrap();
             }
@@ -387,9 +394,22 @@ async fn process_command(
                     Err(_e) => {}
                 }
             }
+            Request::Inhibit(_timeout) => {
+                let _ = inhibit_sleep().await?;
+            }
+            Request::Flush => {
+                CONNECTION.flush().unwrap();
+            }
         }
     }
     Ok(())
+}
+
+fn inhibit_sleep() -> JoinHandle<Result<(), anyhow::Error>> {
+    async fn run() -> Result<(), anyhow::Error> {
+        Ok(())
+    }
+    tokio::spawn(run())
 }
 
 fn lua_load_config(lua: &Lua) -> anyhow::Result<Result<(), mlua::Error>> {
@@ -515,6 +535,17 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                         .bind::<zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1, _, _>(name, 1, qh, ());
                     info!("zwp_idle_inhibitor_v1: {:?}", name);
                 }
+                "zwp_idle_inhibit_manager_v1" => {
+                    let inhibit_manager = registry
+                        .bind::<zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1, _, _>(
+                        name,
+                        1,
+                        qh,
+                        (),
+                    );
+                    state.inhibit_manager = Some(inhibit_manager);
+                    info!("zwp_idle_inhibit_manager_v1: {:?}", name);
+                }
                 "zwlr_gamma_control_v1" => {
                     let _gamma_control = registry
                         .bind::<zwlr_gamma_control_v1::ZwlrGammaControlV1, _, _>(name, 1, qh, ());
@@ -573,6 +604,19 @@ impl Dispatch<zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1, ()> for State {
         _qh: &QueueHandle<Self>,
     ) {
         info!("Idle inhibitor event: {:?}", _event)
+    }
+}
+
+impl Dispatch<zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1, ()> for State {
+    fn event(
+        _: &mut Self,
+        _: &zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1,
+        _event: zwp_idle_inhibit_manager_v1::Event,
+        _: &(),
+        _: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        info!("Idle Inhibit Manager event: {:?}", _event);
     }
 }
 
