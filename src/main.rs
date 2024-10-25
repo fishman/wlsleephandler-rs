@@ -11,14 +11,21 @@ use std::{
     io::Write,
     path::Path,
     process::Stdio,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    time::Duration,
 };
 use sysinfo::{ProcessExt, System, SystemExt};
-use tokio::{process::Command, sync::mpsc, task::JoinHandle};
+use tokio::{process::Command, sync::mpsc, task::JoinHandle, time::sleep};
 use uuid::Uuid;
 use wayland_client::{
     backend::ReadEventsGuard,
-    protocol::{wl_output, wl_registry, wl_seat},
+    protocol::{
+        wl_compositor, wl_output, wl_registry, wl_seat,
+        wl_surface::{self, WlSurface},
+    },
     Connection, Dispatch, EventQueue, QueueHandle,
 };
 use wayland_protocols::{
@@ -29,6 +36,10 @@ use wayland_protocols::{
 use wayland_protocols_wlr::gamma_control::v1::client::{
     zwlr_gamma_control_manager_v1, zwlr_gamma_control_v1,
 };
+
+use crate::types::CallbackListHandle;
+use crate::types::LuaHandle;
+use crate::types::NotificationListHandle;
 
 mod color;
 mod config;
@@ -41,12 +52,12 @@ mod utils;
 use types::Request;
 use udev_handler::UdevHandler;
 
-const CONFIG_FILE: &str = include_str!("../lua_configs/idle_config.lua");
-
 lazy_static::lazy_static! {
     static ref CONNECTION: Connection = Connection::connect_to_env().unwrap();
     static ref INHIBIT_MANAGER: std::sync::Mutex<Option<zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1>> = std::sync::Mutex::new(None);
+    static ref SURFACE: std::sync::Mutex<Option<WlSurface>> = std::sync::Mutex::new(None);
 }
+static IS_INHIBITED: AtomicBool = AtomicBool::new(false);
 
 fn ensure_config_file_exists(filename: &str) -> std::io::Result<()> {
     let config_path = utils::xdg_config_path(Some(filename.to_string()))?;
@@ -54,7 +65,7 @@ fn ensure_config_file_exists(filename: &str) -> std::io::Result<()> {
     if !config_path.exists() {
         // Write the default settings to the file
         let mut file = File::create(&config_path)?;
-        file.write_all(CONFIG_FILE.as_bytes())?;
+        file.write_all(config::CONFIG_FILE.as_bytes())?;
     }
 
     Ok(())
@@ -142,12 +153,6 @@ impl UserData for DbusHandler {
     }
 }
 
-type NotificationListHandle =
-    Arc<Mutex<HashMap<Uuid, (String, ext_idle_notification_v1::ExtIdleNotificationV1)>>>;
-
-type CallbackListHandle = Arc<Mutex<HashMap<String, String>>>;
-type LuaHandle = Arc<Mutex<Lua>>;
-
 impl UserData for LuaHelpers {
     // fn add_fields<'lua, F: UserDataFields<'lua, Self>>(fields: &mut F) {
     //     fields.add_field_method_get("on_battery", |_, this| Ok(this.on_battery));
@@ -215,7 +220,7 @@ impl UserData for MyLuaFunctions {
                 {
                     Ok(mut child) => match child.wait().await {
                         Ok(status) => {
-                            info!("Command {} completed with status: {:?}", cmd, status);
+                            debug!("Command {} completed with status: {:?}", cmd, status);
                             Ok(())
                         }
                         Err(e) => {
@@ -305,13 +310,6 @@ pub async fn filewatcher_run(config_path: &Path, tx: mpsc::Sender<Request>) -> a
         }
     });
     Ok(())
-}
-
-fn inhibit_sleep() -> JoinHandle<Result<(), anyhow::Error>> {
-    async fn run() -> Result<(), anyhow::Error> {
-        Ok(())
-    }
-    tokio::spawn(run())
 }
 
 fn lua_load_config(lua: &Lua) -> anyhow::Result<Result<(), mlua::Error>> {
@@ -467,6 +465,14 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                             );
                     info!("zwlr_gamma_control_manager_v1: {:?}", name);
                 }
+                "wl_compositor" => {
+                    let compositor =
+                        registry.bind::<wl_compositor::WlCompositor, _, _>(name, 1, qh, ());
+                    info!("wl_compositor: {:?}", name);
+
+                    let surface = compositor.create_surface(qh, ());
+                    *SURFACE.lock().unwrap() = Some(surface);
+                }
                 "wl_output" => {
                     let wl_output = registry.bind::<wl_output::WlOutput, _, _>(name, 1, qh, ());
                     let output = Output {
@@ -610,6 +616,32 @@ impl Dispatch<ext_idle_notification_v1::ExtIdleNotificationV1, NotificationConte
     }
 }
 
+impl Dispatch<wl_compositor::WlCompositor, ()> for State {
+    fn event(
+        _: &mut Self,
+        _: &wl_compositor::WlCompositor,
+        _: wl_compositor::Event,
+        _: &(),
+        _: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        info!("Compositor event");
+    }
+}
+
+impl Dispatch<wl_surface::WlSurface, ()> for State {
+    fn event(
+        _: &mut Self,
+        _: &wl_surface::WlSurface,
+        _: wl_surface::Event,
+        _: &(),
+        _: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        info!("Surface event");
+    }
+}
+
 #[derive(Clone)]
 pub struct WaylandRunner {
     lua: LuaHandle,
@@ -707,14 +739,45 @@ impl WaylandRunner {
                         Err(_e) => {}
                     }
                 }
-                Request::Inhibit(_timeout) => {
-                    let _ = inhibit_sleep().await?;
+                Request::Inhibit => {
+                    let _ = self.inhibit_sleep();
                 }
                 Request::Flush => {
                     CONNECTION.flush().unwrap();
                 }
             }
         }
+        Ok(())
+    }
+
+    fn inhibit_sleep(&self) -> anyhow::Result<()> {
+        async fn run() -> anyhow::Result<()> {
+            // Return early if already inhibited
+            if IS_INHIBITED.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+
+            info!("Inhibiting sleep");
+            IS_INHIBITED.store(true, Ordering::SeqCst);
+
+            // Create inhibitor
+            if let Some(_manager) = INHIBIT_MANAGER.lock().unwrap().as_ref() {
+                //let _inhibitor = manager.create_inhibitor(&surface, self.qh.clone(), ());
+            }
+            sleep(Duration::from_secs(config::TIMEOUT_SEC)).await;
+
+            if let Some(manager) = INHIBIT_MANAGER.lock().unwrap().as_ref() {
+                // Destroy inhibitor
+                info!("Destroying inhibitor");
+                manager.destroy();
+            }
+
+            // Reset inhibited state
+            IS_INHIBITED.store(false, Ordering::SeqCst);
+
+            Ok(())
+        }
+        tokio::spawn(async move { run().await });
         Ok(())
     }
 }
@@ -732,7 +795,7 @@ async fn main() -> anyhow::Result<()> {
         .expect("Failed to spawn task");
 
     let wayland_runner = WaylandRunner::new(lua.clone(), tx.clone());
-    let udev_handler = UdevHandler::new();
+    let udev_handler = UdevHandler::new(tx.clone());
 
     let _ = wayland_runner.wayland_run().await;
 

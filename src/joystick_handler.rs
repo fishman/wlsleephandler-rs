@@ -1,15 +1,19 @@
 use evdev::{Device, InputEventKind};
 use log::{debug, info};
 use std::path::Path;
+use tokio::sync::mpsc;
+
+use crate::types::Request;
 
 #[derive(Debug)]
 pub struct JoystickHandler {
     syspath: String,
+    tx: mpsc::Sender<Request>,
 }
 
 impl JoystickHandler {
-    pub fn new(syspath: String) -> Self {
-        Self { syspath }
+    pub fn new(syspath: String, tx: mpsc::Sender<Request>) -> Self {
+        Self { syspath, tx }
     }
 
     pub async fn js_handler(&self) -> anyhow::Result<()> {
@@ -25,7 +29,8 @@ impl JoystickHandler {
                         Ok(ev) => {
                             match ev.kind() {
                                 InputEventKind::Key(key) => {
-                                    info!("Key event: {:?}, value: {}", key, ev.value());
+                                    debug!("Key event: {:?}, value: {}", key, ev.value());
+                                    self.tx.send(Request::Inhibit).await.unwrap();
                                 }
                                 // Ignore axis and synchronization events for now. For Axis events
                                 // it's not currently clear how to get absinfo

@@ -1,29 +1,32 @@
 use log::debug;
 use std::collections::HashMap;
-use tokio::{io::unix::AsyncFd, sync::Mutex, task::JoinHandle};
+use tokio::{
+    io::unix::AsyncFd,
+    sync::{mpsc, Mutex},
+    task::JoinHandle,
+};
 use udev::{EventType, MonitorBuilder};
 
 use crate::joystick_handler::JoystickHandler;
+use crate::types::Request;
 
 pub struct UdevHandler {
-    paused: bool,
-    timeout_sec: u64,
     joysticks: Mutex<HashMap<String, JoinHandle<anyhow::Result<()>>>>,
+    tx: mpsc::Sender<Request>,
 }
 
 impl UdevHandler {
-    pub fn new() -> Self {
+    pub fn new(tx: mpsc::Sender<Request>) -> Self {
         Self {
-            paused: false,
-            timeout_sec: 30,
             joysticks: Mutex::new(HashMap::new()),
+            tx,
         }
     }
 
     async fn joystick_add(&self, joystick: udev::Device) -> anyhow::Result<()> {
         if let Some(sysname) = self.get_joystick_sysname(joystick) {
             debug!("Added joystick {}", sysname.clone());
-            let joystick_handler = JoystickHandler::new(sysname.clone());
+            let joystick_handler = JoystickHandler::new(sysname.clone(), self.tx.clone());
             let mut joysticks = self.joysticks.lock().await;
             joysticks.insert(
                 sysname.clone(),
