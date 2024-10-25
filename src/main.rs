@@ -11,36 +11,55 @@ use std::{
     io::Write,
     path::Path,
     process::Stdio,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    time::Duration,
 };
 use sysinfo::{ProcessExt, System, SystemExt};
-use tokio::{process::Command, sync::mpsc, task::JoinHandle};
+use tokio::{process::Command, sync::mpsc, task::JoinHandle, time::sleep};
 use uuid::Uuid;
 use wayland_client::{
     backend::ReadEventsGuard,
-    protocol::{wl_output, wl_registry, wl_seat},
+    protocol::{
+        wl_compositor, wl_output, wl_registry, wl_seat,
+        wl_surface::{self, WlSurface},
+    },
     Connection, Dispatch, EventQueue, QueueHandle,
 };
 use wayland_protocols::{
     ext::idle_notify::v1::client::{ext_idle_notification_v1, ext_idle_notifier_v1},
-    wp::idle_inhibit::zv1::client::zwp_idle_inhibitor_v1,
+    wp::idle_inhibit::zv1::client::{
+        zwp_idle_inhibit_manager_v1,
+        zwp_idle_inhibitor_v1::{self, ZwpIdleInhibitorV1},
+    },
     xdg::activation::v1::client::{xdg_activation_token_v1, xdg_activation_v1},
 };
 use wayland_protocols_wlr::gamma_control::v1::client::{
     zwlr_gamma_control_manager_v1, zwlr_gamma_control_v1,
 };
 
+use crate::types::CallbackListHandle;
+use crate::types::LuaHandle;
+use crate::types::NotificationListHandle;
+
 mod color;
 mod config;
 mod dbus;
+mod joystick_handler;
 mod types;
+mod udev_handler;
 mod utils;
-//mod wljoywake;
 
 use types::Request;
-//use wljoywake::JoystickHandler;
+use udev_handler::UdevHandler;
 
-const CONFIG_FILE: &str = include_str!("../lua_configs/idle_config.lua");
+lazy_static::lazy_static! {
+    static ref INHIBIT_MANAGER: std::sync::Mutex<Option<zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1>> = std::sync::Mutex::new(None);
+    static ref SURFACE: std::sync::Mutex<Option<WlSurface>> = std::sync::Mutex::new(None);
+}
+static IS_INHIBITED: AtomicBool = AtomicBool::new(false);
 
 fn ensure_config_file_exists(filename: &str) -> std::io::Result<()> {
     let config_path = utils::xdg_config_path(Some(filename.to_string()))?;
@@ -48,7 +67,7 @@ fn ensure_config_file_exists(filename: &str) -> std::io::Result<()> {
     if !config_path.exists() {
         // Write the default settings to the file
         let mut file = File::create(&config_path)?;
-        file.write_all(CONFIG_FILE.as_bytes())?;
+        file.write_all(config::CONFIG_FILE.as_bytes())?;
     }
 
     Ok(())
@@ -136,12 +155,6 @@ impl UserData for DbusHandler {
     }
 }
 
-type NotificationListHandle =
-    Arc<Mutex<HashMap<Uuid, (String, ext_idle_notification_v1::ExtIdleNotificationV1)>>>;
-
-type CallbackListHandle = Arc<Mutex<HashMap<String, String>>>;
-type LuaHandle = Arc<Mutex<Lua>>;
-
 impl UserData for LuaHelpers {
     // fn add_fields<'lua, F: UserDataFields<'lua, Self>>(fields: &mut F) {
     //     fields.add_field_method_get("on_battery", |_, this| Ok(this.on_battery));
@@ -209,7 +222,7 @@ impl UserData for MyLuaFunctions {
                 {
                     Ok(mut child) => match child.wait().await {
                         Ok(status) => {
-                            info!("Command {} completed with status: {:?}", cmd, status);
+                            debug!("Command {} completed with status: {:?}", cmd, status);
                             Ok(())
                         }
                         Err(e) => {
@@ -260,36 +273,6 @@ fn generate_uuid() -> uuid::Uuid {
     Uuid::new_v4()
 }
 
-pub async fn wayland_run(
-    lua: LuaHandle,
-    tx: mpsc::Sender<Request>,
-    notification_list: NotificationListHandle,
-    dbus_handlers: CallbackListHandle,
-) -> anyhow::Result<(), anyhow::Error> {
-    let conn = Connection::connect_to_env().unwrap();
-    let mut event_queue: EventQueue<State> = conn.new_event_queue();
-    let qhandle = event_queue.handle();
-
-    let display = conn.display();
-    display.get_registry(&qhandle, ());
-
-    let mut state = State {
-        wl_seat: None,
-        idle_notifier: None,
-        qh: qhandle.clone(),
-        notification_list: notification_list.clone(),
-        dbus_handlers: dbus_handlers.clone(),
-        tx: tx.clone(),
-        lua,
-        outputs: HashMap::new(),
-    };
-
-    let _wayland_task = tokio::task::spawn_blocking(move || loop {
-        event_queue.blocking_dispatch(&mut state).unwrap();
-    });
-    Ok(())
-}
-
 async fn _wait_for_wayland_event(
     read_guard: ReadEventsGuard,
     event_queue: &mut EventQueue<State>,
@@ -328,110 +311,6 @@ pub async fn filewatcher_run(config_path: &Path, tx: mpsc::Sender<Request>) -> a
             }
         }
     });
-    Ok(())
-}
-
-async fn process_command(
-    lua: LuaHandle,
-    tx: mpsc::Sender<Request>,
-    rx: &mut mpsc::Receiver<Request>,
-    shared_map: NotificationListHandle,
-    dbus_handlers: CallbackListHandle,
-) -> anyhow::Result<()> {
-    while let Some(event) = rx.recv().await {
-        match event {
-            Request::Reset => {
-                debug!("Reloading config");
-                {
-                    let map = shared_map.lock().unwrap();
-                    for (_, (_, notification)) in map.iter() {
-                        notification.destroy();
-                    }
-                }
-                tx.send(Request::LuaReload).await.unwrap();
-            }
-            Request::LuaReload => {
-                debug!("Reloading lua config");
-                let lua = lua.lock().unwrap();
-                let _ = lua_load_config(&lua).unwrap();
-            }
-            Request::LuaMethod(method_name) => {
-                let lua = lua.lock().unwrap();
-                let globals = lua.globals();
-                let map = dbus_handlers.lock().unwrap();
-                match map.get(&method_name) {
-                    Some(fn_name) => {
-                        let fn_name = fn_name.clone();
-                        let result: Result<Function, _> = globals.get(fn_name.clone());
-                        if let Ok(lua_func) = result {
-                            lua_func.call(())?;
-                        } else {
-                            debug!("Lua function not found: {}", fn_name);
-                        }
-                    }
-                    None => {
-                        debug!("No dbus handler found for {}", method_name);
-                    }
-                }
-            }
-            Request::OnBattery(state) => {
-                let lua = lua.lock().unwrap();
-                let globals = lua.globals();
-                let res: mlua::Result<mlua::AnyUserData> = globals.get("Helpers");
-
-                match res {
-                    Ok(helpers) => {
-                        let _ = helpers.call_method::<_, bool>("set_on_battery", state);
-                    }
-                    Err(_e) => {}
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    Builder::from_env(Env::default().default_filter_or("info")).init();
-    let _ = ensure_config_file_exists(config::CONFIG_FILE_NAME);
-    // Run the event loop in a separate async task
-    let (tx, mut rx) = mpsc::channel(32);
-
-    let map: HashMap<Uuid, (String, ext_idle_notification_v1::ExtIdleNotificationV1)> =
-        HashMap::new();
-    let shared_map = Arc::new(Mutex::new(map));
-    let lua = Arc::new(Mutex::new(Lua::new()));
-    let dbus_handlers = Arc::new(Mutex::new(HashMap::new()));
-    //let joystick_handler = Arc::new(TokioMutex::new(JoystickHandler::new()));
-    //let _ = tokio::spawn(JoystickHandler::run(joystick_handler.clone())).await;
-    //let _ = tokio::spawn(JoystickHandler::udev_handler_run(joystick_handler.clone())).await;
-
-    let config_path = utils::xdg_config_path(None)?;
-    filewatcher_run(&config_path, tx.clone())
-        .await
-        .expect("Failed to spawn task");
-    let _ = wayland_run(
-        lua.clone(),
-        tx.clone(),
-        shared_map.clone(),
-        dbus_handlers.clone(),
-    )
-    .await;
-    tokio::try_join!(
-        dbus::upower_watcher(tx.clone()),
-        dbus::logind_watcher(tx.clone()),
-        process_command(
-            lua.clone(),
-            tx,
-            &mut rx,
-            shared_map.clone(),
-            dbus_handlers.clone(),
-        ),
-    )?;
-    // .await
-    // .unwrap();
-
     Ok(())
 }
 
@@ -558,6 +437,19 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                         .bind::<zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1, _, _>(name, 1, qh, ());
                     info!("zwp_idle_inhibitor_v1: {:?}", name);
                 }
+                "zwp_idle_inhibit_manager_v1" => {
+                    let inhibit_manager = registry
+                        .bind::<zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1, _, _>(
+                        name,
+                        1,
+                        qh,
+                        (),
+                    );
+
+                    *INHIBIT_MANAGER.lock().unwrap() = Some(inhibit_manager);
+
+                    info!("zwp_idle_inhibit_manager_v1: {:?}", name);
+                }
                 "zwlr_gamma_control_v1" => {
                     let _gamma_control = registry
                         .bind::<zwlr_gamma_control_v1::ZwlrGammaControlV1, _, _>(name, 1, qh, ());
@@ -574,6 +466,14 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                                 (),
                             );
                     info!("zwlr_gamma_control_manager_v1: {:?}", name);
+                }
+                "wl_compositor" => {
+                    let compositor =
+                        registry.bind::<wl_compositor::WlCompositor, _, _>(name, 1, qh, ());
+                    info!("wl_compositor: {:?}", name);
+
+                    let surface = compositor.create_surface(qh, ());
+                    *SURFACE.lock().unwrap() = Some(surface);
                 }
                 "wl_output" => {
                     let wl_output = registry.bind::<wl_output::WlOutput, _, _>(name, 1, qh, ());
@@ -616,6 +516,19 @@ impl Dispatch<zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1, ()> for State {
         _qh: &QueueHandle<Self>,
     ) {
         info!("Idle inhibitor event: {:?}", _event)
+    }
+}
+
+impl Dispatch<zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1, ()> for State {
+    fn event(
+        _: &mut Self,
+        _: &zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1,
+        _event: zwp_idle_inhibit_manager_v1::Event,
+        _: &(),
+        _: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        info!("Idle Inhibit Manager event: {:?}", _event);
     }
 }
 
@@ -703,4 +616,216 @@ impl Dispatch<ext_idle_notification_v1::ExtIdleNotificationV1, NotificationConte
             _ => "unknown",
         });
     }
+}
+
+impl Dispatch<wl_compositor::WlCompositor, ()> for State {
+    fn event(
+        _: &mut Self,
+        _: &wl_compositor::WlCompositor,
+        _: wl_compositor::Event,
+        _: &(),
+        _: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        info!("Compositor event");
+    }
+}
+
+impl Dispatch<wl_surface::WlSurface, ()> for State {
+    fn event(
+        _: &mut Self,
+        _: &wl_surface::WlSurface,
+        _: wl_surface::Event,
+        _: &(),
+        _: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        info!("Surface event");
+    }
+}
+
+#[derive(Clone)]
+pub struct WaylandRunner {
+    connection: Connection,
+    qhandle: QueueHandle<State>,
+    lua: LuaHandle,
+    tx: mpsc::Sender<Request>,
+    notification_list: NotificationListHandle,
+    dbus_handlers: CallbackListHandle,
+}
+
+impl WaylandRunner {
+    pub fn new(
+        connection: Connection,
+        qhandle: QueueHandle<State>,
+        lua: LuaHandle,
+        tx: mpsc::Sender<Request>,
+    ) -> Self {
+        let map: HashMap<Uuid, (String, ext_idle_notification_v1::ExtIdleNotificationV1)> =
+            HashMap::new();
+
+        let notification_list = Arc::new(Mutex::new(map));
+        let dbus_handlers = Arc::new(Mutex::new(HashMap::new()));
+
+        Self {
+            connection,
+            qhandle,
+            lua,
+            tx,
+            notification_list,
+            dbus_handlers,
+        }
+    }
+
+    pub async fn wayland_run(
+        &self,
+        mut event_queue: EventQueue<State>,
+    ) -> anyhow::Result<JoinHandle<Result<(), anyhow::Error>>> {
+        let display = self.connection.display();
+        display.get_registry(&self.qhandle, ());
+
+        let mut state = State {
+            wl_seat: None,
+            idle_notifier: None,
+            qh: self.qhandle.clone(),
+            notification_list: self.notification_list.clone(),
+            dbus_handlers: self.dbus_handlers.clone(),
+            tx: self.tx.clone(),
+            lua: self.lua.clone(),
+            outputs: HashMap::new(),
+        };
+
+        Ok(tokio::task::spawn_blocking(move || loop {
+            event_queue.blocking_dispatch(&mut state)?;
+        }))
+    }
+
+    pub async fn process_command(&self, rx: &mut mpsc::Receiver<Request>) -> anyhow::Result<()> {
+        while let Some(event) = rx.recv().await {
+            match event {
+                Request::Reset => {
+                    debug!("Reloading config");
+                    {
+                        let map = self.notification_list.lock().unwrap();
+                        for (_, (_, notification)) in map.iter() {
+                            notification.destroy();
+                        }
+                        self.connection.flush();
+                    }
+                    self.tx.send(Request::LuaReload).await.unwrap();
+                }
+                Request::LuaReload => {
+                    debug!("Reloading lua config");
+                    let lua = self.lua.lock().unwrap();
+                    let _ = lua_load_config(&lua).unwrap();
+                }
+                Request::LuaMethod(method_name) => {
+                    let lua = self.lua.lock().unwrap();
+                    let globals = lua.globals();
+                    let map = self.dbus_handlers.lock().unwrap();
+                    match map.get(&method_name) {
+                        Some(fn_name) => {
+                            let fn_name = fn_name.clone();
+                            let result: Result<Function, _> = globals.get(fn_name.clone());
+                            if let Ok(lua_func) = result {
+                                lua_func.call(())?;
+                            } else {
+                                debug!("Lua function not found: {}", fn_name);
+                            }
+                        }
+                        None => {
+                            debug!("No dbus handler found for {}", method_name);
+                        }
+                    }
+                }
+                Request::OnBattery(state) => {
+                    let lua = self.lua.lock().unwrap();
+                    let globals = lua.globals();
+                    let res: mlua::Result<mlua::AnyUserData> = globals.get("Helpers");
+
+                    match res {
+                        Ok(helpers) => {
+                            let _ = helpers.call_method::<_, bool>("set_on_battery", state);
+                        }
+                        Err(_e) => {}
+                    }
+                }
+                Request::Inhibit => {
+                    let _ = self.inhibit_sleep();
+                }
+                Request::Flush => {
+                    self.connection.flush();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn inhibit_sleep(&self) -> anyhow::Result<()> {
+        async fn run(connection: Connection, qhandle: QueueHandle<State>) -> anyhow::Result<()> {
+            // Return early if already inhibited
+            if IS_INHIBITED.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+
+            debug!("Inhibiting sleep");
+            IS_INHIBITED.store(true, Ordering::SeqCst);
+
+            let mut inhibitor: Option<ZwpIdleInhibitorV1> = None;
+            if let Some(manager) = INHIBIT_MANAGER.lock().unwrap().as_ref() {
+                let surface = SURFACE.lock().unwrap();
+                if let Some(surface) = surface.as_ref() {
+                    inhibitor = Some(manager.create_inhibitor(surface, &qhandle.clone(), ()));
+                    let _ = connection.flush();
+                }
+            }
+            sleep(Duration::from_secs(config::TIMEOUT_SEC)).await;
+
+            if let Some(inhibitor) = inhibitor {
+                debug!("Destroying inhibitor");
+                inhibitor.destroy();
+                let _ = connection.flush();
+            }
+
+            // Reset inhibited state
+            IS_INHIBITED.store(false, Ordering::SeqCst);
+
+            Ok(())
+        }
+        let qh = self.qhandle.clone();
+        let connection = self.connection.clone();
+        tokio::spawn(async move { run(connection, qh).await });
+        Ok(())
+    }
+}
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    Builder::from_env(Env::default().default_filter_or("info")).init();
+    let _ = ensure_config_file_exists(config::CONFIG_FILE_NAME);
+    let (tx, mut rx) = mpsc::channel(32);
+
+    let lua = Arc::new(Mutex::new(Lua::new()));
+
+    let config_path = utils::xdg_config_path(None)?;
+    filewatcher_run(&config_path, tx.clone())
+        .await
+        .expect("Failed to spawn task");
+
+    let connection = Connection::connect_to_env().unwrap();
+    let event_queue: EventQueue<State> = connection.new_event_queue();
+    let qhandle = event_queue.handle();
+
+    let wayland_runner = WaylandRunner::new(connection, qhandle.clone(), lua.clone(), tx.clone());
+    let udev_handler = UdevHandler::new(tx.clone());
+
+    let _ = wayland_runner.wayland_run(event_queue).await;
+
+    tokio::try_join!(
+        dbus::upower_watcher(tx.clone()),
+        dbus::logind_watcher(tx.clone()),
+        wayland_runner.process_command(&mut rx),
+        udev_handler.monitor()
+    )?;
+
+    Ok(())
 }

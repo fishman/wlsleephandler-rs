@@ -16,7 +16,7 @@ pub async fn upower_watcher(tx: mpsc::Sender<Request>) -> anyhow::Result<()> {
         while let Some(on_battery_changed) = power_stream.next().await {
             match on_battery_changed.get().await {
                 Ok(on_battery) => {
-                    let _ = tx.send(Request::OnBattery(on_battery)).await.unwrap();
+                    tx.send(Request::OnBattery(on_battery)).await.unwrap();
                 }
                 Err(e) => {
                     error!("Error, getting on_battery property {}", e)
