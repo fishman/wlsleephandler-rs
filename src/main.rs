@@ -710,7 +710,7 @@ impl WaylandRunner {
                         for (_, (_, notification)) in map.iter() {
                             notification.destroy();
                         }
-                        self.connection.flush();
+                        let _ = self.connection.flush();
                     }
                     self.tx.send(Request::LuaReload).await.unwrap();
                 }
@@ -754,7 +754,7 @@ impl WaylandRunner {
                     let _ = self.inhibit_sleep();
                 }
                 Request::Flush => {
-                    self.connection.flush();
+                    let _ = self.connection.flush();
                 }
             }
         }
