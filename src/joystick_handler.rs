@@ -28,8 +28,8 @@ impl JoystickHandler {
                     match ev {
                         Ok(ev) => {
                             match ev.kind() {
-                                InputEventKind::Key(key) => {
-                                    debug!("Key event: {:?}, value: {}", key, ev.value());
+                                InputEventKind::Key(_key) => {
+                                    //debug!("Key event: {:?}, value: {}", key, ev.value());
                                     self.tx.send(Request::Inhibit).await.unwrap();
                                 }
                                 // Ignore axis and synchronization events for now. For Axis events
