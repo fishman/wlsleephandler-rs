@@ -1,5 +1,4 @@
 use clap::Parser;
-use color::Color;
 use env_logger::{Builder, Env};
 use inotify::{EventMask, Inotify, WatchMask};
 use log::{debug, error, info};
@@ -23,22 +22,14 @@ use uuid::Uuid;
 use wayland::NotificationContext;
 use wayland_client::{
     backend::ReadEventsGuard,
-    protocol::{
-        wl_compositor, wl_output, wl_registry, wl_seat,
-        wl_surface::{self, WlSurface},
-    },
-    Connection, Dispatch, EventQueue, QueueHandle,
+    protocol::{wl_seat, wl_surface::WlSurface},
+    Connection, EventQueue, QueueHandle,
 };
 use wayland_protocols::{
     ext::idle_notify::v1::client::{ext_idle_notification_v1, ext_idle_notifier_v1},
     wp::idle_inhibit::zv1::client::{
-        zwp_idle_inhibit_manager_v1,
-        zwp_idle_inhibitor_v1::{self, ZwpIdleInhibitorV1},
+        zwp_idle_inhibit_manager_v1, zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1,
     },
-    xdg::activation::v1::client::{xdg_activation_token_v1, xdg_activation_v1},
-};
-use wayland_protocols_wlr::gamma_control::v1::client::{
-    zwlr_gamma_control_manager_v1, zwlr_gamma_control_v1,
 };
 
 use crate::types::CallbackListHandle;

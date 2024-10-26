@@ -1,21 +1,19 @@
-use mlua::{AnyUserDataExt, Function, Lua, UserData, UserDataMethods};
-use tokio::{process::Command, sync::mpsc, task::JoinHandle, time::sleep};
+use mlua::Function;
 
-use log::{debug, error, info};
+use log::{debug, info};
 use uuid::Uuid;
 use wayland_client::{
-    backend::ReadEventsGuard,
     protocol::{
         wl_compositor, wl_output, wl_registry, wl_seat,
-        wl_surface::{self, WlSurface},
+        wl_surface::{self},
     },
-    Connection, Dispatch, EventQueue, QueueHandle,
+    Connection, Dispatch, QueueHandle,
 };
 use wayland_protocols::{
     ext::idle_notify::v1::client::{ext_idle_notification_v1, ext_idle_notifier_v1},
     wp::idle_inhibit::zv1::client::{
         zwp_idle_inhibit_manager_v1,
-        zwp_idle_inhibitor_v1::{self, ZwpIdleInhibitorV1},
+        zwp_idle_inhibitor_v1::{self},
     },
     xdg::activation::v1::client::{xdg_activation_token_v1, xdg_activation_v1},
 };
