@@ -6,28 +6,30 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = "1.0.75"
-bytemuck = "1.18.0"
-clap = { version = "4.4.8", features = ["derive"] }
-env_logger = "0.10.1"
+anyhow = "1.0.91"
+bytemuck = "1.19.0"
+chrono = "0.4.38"
+clap = { version = "4.5.20", features = ["derive"] }
+env_logger = "0.11.5"
 evdev = { version = "0.12.2", features = ["tokio"] }
-futures = { version = "0.3.29", features = ["compat"] }
-inotify = "0.10.2"
+futures = { version = "0.3.31", features = ["compat"] }
+inotify = "0.11.0"
 lazy_static = "1.5.0"
-log = "0.4.20"
-mlua = { version = "0.9.1", features = ["async", "luau", "send"] }
+log = "0.4.22"
+mlua = { version = "0.10.0", features = ["async", "luau", "send"] }
 nix = { version = "0.29.0", features = ["fs", "poll", "signal", "time"] }
-once_cell = "1.18.0"
-parking_lot = "0.12.1"
+once_cell = "1.20.2"
+parking_lot = "0.12.3"
 shmemfdrs2 = "1.0.0"
-sysinfo = "0.29.10"
-tokio = { version = "1.32.0", features = ["rt", "macros", "process", "rt-multi-thread", "mio", "signal"] }
+sun = "0.3.1"
+sysinfo = "0.32.0"
+tokio = { version = "1.41.0", features = ["rt", "macros", "process", "rt-multi-thread", "mio", "signal"] }
 tokio-timer = "0.2.13"
 tokio-udev = "0.9.1"
-udev = "0.9.0"
-uuid = { version = "1.5.0", features = ["fast-rng", "v4"] }
-wayland-client = { version = "0.31.6", features = ["log"] }
-wayland-protocols = { version = "0.32.4", features = ["client", "staging", "unstable"] }
-wayland-protocols-wlr = { version = "0.3.4", features = ["client"] }
+udev = "0.9.1"
+uuid = { version = "1.11.0", features = ["fast-rng", "v4"] }
+wayland-client = { version = "0.31.7", features = ["log"] }
+wayland-protocols = { version = "0.32.5", features = ["client", "staging", "unstable"] }
+wayland-protocols-wlr = { version = "0.3.5", features = ["client"] }
 xdg = "2.5.2"
-zbus = { version = "3.14.1", features = ["tokio"] }
+zbus = { version = "5.0.1", features = ["tokio"] }

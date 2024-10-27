@@ -40,6 +40,7 @@ mod color;
 mod config;
 mod dbus;
 mod joystick_handler;
+mod sunset;
 mod types;
 mod udev_handler;
 mod utils;
