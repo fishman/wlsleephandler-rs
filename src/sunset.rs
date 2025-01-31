@@ -1,5 +1,7 @@
 use std::f64::consts::PI;
 
+use chrono::{DateTime, Datelike, Duration, NaiveTime, TimeZone, Utc};
+
 const SUNSET_OFFICIAL: f64 = 90.833; // Standard sun angle for sunset
 const SUNSET_NAUTICAL: f64 = 102.0; // Nautical sun angle for sunset
 const SUNSET_CIVIL: f64 = 96.0; // Civil sun angle for sunset
@@ -175,7 +177,15 @@ impl SunSet {
             + mrad.sin() * 3.0 * 0.000289
     }
 
-    fn calc_abs_sunset(&self, offset: f64) -> f64 {
+    fn minutes_to_midnight_to_datetime(&self, minutes: f64) -> DateTime<Utc> {
+        let midnight =
+            NaiveTime::from_hms_opt(0, 0, 0).expect("Could not create midnight datetime");
+        let utc_midnight = Utc::now().with_time(midnight).unwrap();
+
+        utc_midnight - Duration::minutes(minutes as i64)
+    }
+
+    fn calc_abs_sunset(&self, offset: f64) -> DateTime<Utc> {
         let t = self.calc_time_julian_cent(self.julian_date);
         // First pass to approximate sunset
         let mut eq_time = self.calc_equation_of_time(t);
@@ -195,10 +205,10 @@ impl SunSet {
         time_diff = 4.0 * delta;
         time_utc = 720.0 - time_diff - eq_time; // in minutes
 
-        time_utc // return time in minutes from midnight
+        self.minutes_to_midnight_to_datetime(time_utc)
     }
 
-    pub fn calc_abs_sunrise(&self, offset: f64) -> f64 {
+    pub fn calc_abs_sunrise(&self, offset: f64) -> DateTime<Utc> {
         let t = self.calc_time_julian_cent(self.julian_date);
         // First pass to approximate sunrise
         let mut eq_time = self.calc_equation_of_time(t);
@@ -218,14 +228,14 @@ impl SunSet {
         time_diff = 4.0 * delta;
         time_utc = 720.0 - time_diff - eq_time; // in minutes
 
-        time_utc // return time in minutes from midnight
+        self.minutes_to_midnight_to_datetime(time_utc)
     }
 
-    pub fn calc_abs_sunrise_utc(&self) -> f64 {
+    pub fn calc_abs_sunrise_utc(&self) -> DateTime<Utc> {
         self.calc_abs_sunrise(SUNSET_OFFICIAL)
     }
 
-    pub fn calc_abs_sunset_utc(&self) -> f64 {
+    pub fn calc_abs_sunset_utc(&self) -> DateTime<Utc> {
         self.calc_abs_sunset(SUNSET_OFFICIAL)
     }
 }
@@ -237,26 +247,37 @@ mod tests {
     use crate::sunset::SunSet;
 
     #[test]
-    fn test_calculate_sunset() {
-        let test_timestamp = Utc.ymd(2024, 1, 3).and_hms(0, 0, 0).timestamp();
-        let expected_latitude = 40.7128;
-        let expected_longitude = -74.0060;
+    fn test_sunrise() {
+        let _test_timestamp = Utc.with_ymd_and_hms(2024, 1, 3, 0, 0, 0);
+        let expected_latitude = 35.0844;
+        let expected_longitude = 106.6504;
+
+        let sunset = SunSet::with_lat_lon_int_tz(expected_latitude, expected_longitude, 0);
+        let sunrise_utc = sunset.calc_abs_sunrise_utc();
+
+        assert_eq!(sunrise_utc, Utc::now());
+    }
+
+    #[test]
+    fn test_sunset() {
+        let expected_latitude = 35.0844;
+        let expected_longitude = 106.6504;
 
         let sunset = SunSet::with_lat_lon_int_tz(expected_latitude, expected_longitude, 0);
         let sunset_utc = sunset.calc_abs_sunset_utc();
 
-        assert_eq!(sunset_utc, sunset.longitude);
+        assert_eq!(sunset_utc, Utc::now());
     }
 
     #[test]
-    fn test_sunrise() {
-        let test_timestamp = Utc.ymd(2024, 1, 3).and_hms(0, 0, 0).timestamp();
-        let expected_latitude = 40.7128;
-        let expected_longitude = -74.0060;
+    fn test_equation_of_time() {
+        let expected_latitude = 35.0844;
+        let expected_longitude = 106.6504;
 
         let sunset = SunSet::with_lat_lon_int_tz(expected_latitude, expected_longitude, 0);
-        let sunrise_utc = sunset.calc_abs_sunset_utc();
+        let t = sunset.calc_time_julian_cent(sunset.julian_date);
+        let equation_of_time = sunset.calc_equation_of_time(t);
 
-        assert_eq!(sunrise_utc, sunset.longitude);
+        assert_eq!(equation_of_time, 10.0);
     }
 }
